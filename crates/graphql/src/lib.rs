@@ -1,6 +1,6 @@
 use async_graphql::{
-    ComplexObject, Context, EmptySubscription, Enum, ErrorExtensions, ID, Json, Object, Schema,
-    SimpleObject,
+    ComplexObject, Context, EmptySubscription, Enum, ErrorExtensions, ID, InputObject, Json,
+    Object, Schema, SimpleObject,
     connection::{Connection, Edge},
 };
 use chrono::{DateTime, Utc};
@@ -10,6 +10,35 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub type ClickmanSchema = Schema<Query, Mutation, EmptySubscription>;
+
+/// Request-local capability supplied by an authorized host. Creating and
+/// attaching the project share the host's transaction and authorization policy.
+#[async_trait::async_trait]
+pub trait ProjectCreator: Send + Sync {
+    async fn create(
+        &self,
+        storage: &Storage,
+        slug: &str,
+        name: &str,
+    ) -> clickman_storage::Result<clickman_storage::Project>;
+}
+#[async_trait::async_trait]
+pub trait IntegrationPolicy: Send + Sync {
+    async fn validate(
+        &self,
+        project: Uuid,
+        kind: &str,
+        config: &Value,
+    ) -> clickman_storage::Result<()>;
+}
+
+/// Optional request-local limits supplied by an authenticated embedding host.
+/// Standalone installations retain their normal access-key and retention policy.
+#[derive(Clone, Copy)]
+pub struct ProjectPolicy {
+    pub allow_access_keys: bool,
+    pub max_retention_days: Option<u32>,
+}
 
 pub fn sdl() -> String {
     Schema::build(Query, Mutation, EmptySubscription)
@@ -51,6 +80,8 @@ fn error(error: StorageError) -> async_graphql::Error {
         StorageError::Invalid(message) => {
             async_graphql::Error::new(message).extend_with(|_, e| e.set("code", "BAD_USER_INPUT"))
         }
+        StorageError::Capacity { .. } => async_graphql::Error::new("capacity exhausted")
+            .extend_with(|_, e| e.set("code", "CAPACITY_EXHAUSTED")),
         error => {
             tracing::error!(%error,"GraphQL storage operation failed");
             async_graphql::Error::new("storage operation failed")
@@ -71,7 +102,10 @@ pub struct Query;
 impl Query {
     async fn viewer(&self, ctx: &Context<'_>) -> async_graphql::Result<Viewer> {
         Ok(Viewer {
-            can_create_projects: access(ctx)?.is_root(),
+            can_create_projects: access(ctx)?.is_root()
+                || ctx
+                    .data_opt::<std::sync::Arc<dyn ProjectCreator>>()
+                    .is_some(),
         })
     }
     async fn projects(
@@ -126,6 +160,40 @@ impl From<clickman_storage::Project> for Project {
 }
 #[ComplexObject]
 impl Project {
+    async fn segments(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Segment>> {
+        read(ctx, self.uuid)?;
+        Ok(store(ctx)?
+            .segments(self.uuid)
+            .await
+            .map_err(error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+    async fn webhooks(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Webhook>> {
+        admin(ctx, self.uuid)?;
+        Ok(store(ctx)?
+            .webhooks(self.uuid)
+            .await
+            .map_err(error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+    async fn webhook_logs(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 50)] limit: u64,
+    ) -> async_graphql::Result<Vec<WebhookLog>> {
+        admin(ctx, self.uuid)?;
+        Ok(store(ctx)?
+            .webhook_logs(self.uuid, limit)
+            .await
+            .map_err(error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
     async fn can_admin(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
         Ok(access(ctx)?.can_admin(self.uuid))
     }
@@ -213,6 +281,92 @@ pub struct Report {
     pub computed_at: DateTime<Utc>,
 }
 #[derive(SimpleObject)]
+pub struct Segment {
+    pub id: ID,
+    pub key: String,
+    pub name: String,
+    pub definition: Json<Value>,
+    pub enabled: bool,
+    pub fire_existing: bool,
+    pub revision: i32,
+    pub members: i64,
+    pub evaluated_at: Option<DateTime<Utc>>,
+}
+impl From<clickman_storage::SavedSegment> for Segment {
+    fn from(s: clickman_storage::SavedSegment) -> Self {
+        Self {
+            id: s.id.to_string().into(),
+            key: s.definition.key.clone(),
+            name: s.definition.name.clone(),
+            definition: Json(serde_json::to_value(s.definition).expect("segment definition")),
+            enabled: s.enabled,
+            fire_existing: s.fire_existing,
+            revision: s.revision,
+            members: s.members,
+            evaluated_at: s.evaluated_at,
+        }
+    }
+}
+#[derive(SimpleObject)]
+pub struct Webhook {
+    pub id: ID,
+    pub segment_id: ID,
+    pub name: String,
+    pub kind: String,
+    pub config: Json<Value>,
+    pub enabled: bool,
+}
+#[derive(InputObject)]
+pub struct WebhookInput {
+    pub segment_id: Uuid,
+    pub name: String,
+    pub kind: String,
+    pub config: Json<Value>,
+    #[graphql(default = true)]
+    pub enabled: bool,
+}
+impl From<clickman_storage::Webhook> for Webhook {
+    fn from(h: clickman_storage::Webhook) -> Self {
+        Self {
+            id: h.id.to_string().into(),
+            segment_id: h.segment_id.to_string().into(),
+            name: h.name,
+            kind: h.kind,
+            config: Json(h.config),
+            enabled: h.enabled,
+        }
+    }
+}
+#[derive(SimpleObject)]
+pub struct WebhookLog {
+    pub id: ID,
+    pub webhook_id: ID,
+    pub entry_id: ID,
+    pub status: String,
+    pub attempts: i32,
+    pub last_status: Option<i32>,
+    pub last_error: Option<String>,
+    pub next_attempt_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+impl From<clickman_storage::WebhookLog> for WebhookLog {
+    fn from(l: clickman_storage::WebhookLog) -> Self {
+        Self {
+            id: l.id.to_string().into(),
+            webhook_id: l.webhook_id.to_string().into(),
+            entry_id: l.entry_id.to_string().into(),
+            status: l.status,
+            attempts: l.attempts,
+            last_status: l.last_status,
+            last_error: l.last_error,
+            next_attempt_at: l.next_attempt_at,
+            completed_at: l.completed_at,
+            created_at: l.created_at,
+        }
+    }
+}
+#[derive(SimpleObject)]
 pub struct Funnel {
     pub id: ID,
     pub key: String,
@@ -277,13 +431,105 @@ impl From<ProjectRole> for Role {
 pub struct Mutation;
 #[Object]
 impl Mutation {
+    async fn save_segment(
+        &self,
+        ctx: &Context<'_>,
+        project_id: Uuid,
+        definition: Json<Value>,
+        #[graphql(default = true)] enabled: bool,
+        #[graphql(default = false)] fire_existing: bool,
+    ) -> async_graphql::Result<Segment> {
+        admin(ctx, project_id)?;
+        Ok(store(ctx)?
+            .save_segment(project_id, definition.0, enabled, fire_existing)
+            .await
+            .map_err(error)?
+            .into())
+    }
+    async fn delete_segment(
+        &self,
+        ctx: &Context<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> async_graphql::Result<bool> {
+        admin(ctx, project_id)?;
+        store(ctx)?
+            .delete_segment(project_id, id)
+            .await
+            .map_err(error)
+    }
+    async fn save_webhook(
+        &self,
+        ctx: &Context<'_>,
+        project_id: Uuid,
+        input: WebhookInput,
+    ) -> async_graphql::Result<Webhook> {
+        admin(ctx, project_id)?;
+        let WebhookInput {
+            segment_id,
+            name,
+            kind,
+            config,
+            enabled,
+        } = input;
+        let parsed =
+            clickman_destinations::WebhookConfig::parse(project_id, config.0).map_err(|_| {
+                async_graphql::Error::new("invalid webhook configuration")
+                    .extend_with(|_, e| e.set("code", "BAD_USER_INPUT"))
+            })?;
+        let config = serde_json::to_value(parsed).expect("webhook configuration");
+        if let Some(policy) = ctx.data_opt::<std::sync::Arc<dyn IntegrationPolicy>>() {
+            policy
+                .validate(project_id, &kind, &config)
+                .await
+                .map_err(error)?;
+        }
+        Ok(store(ctx)?
+            .save_webhook(project_id, segment_id, &name, &kind, config, enabled)
+            .await
+            .map_err(error)?
+            .into())
+    }
+    async fn delete_webhook(
+        &self,
+        ctx: &Context<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> async_graphql::Result<bool> {
+        admin(ctx, project_id)?;
+        store(ctx)?
+            .delete_webhook(project_id, id)
+            .await
+            .map_err(error)
+    }
+    async fn replay_webhook(
+        &self,
+        ctx: &Context<'_>,
+        project_id: Uuid,
+        id: Uuid,
+    ) -> async_graphql::Result<bool> {
+        admin(ctx, project_id)?;
+        store(ctx)?
+            .replay_webhook(project_id, id)
+            .await
+            .map_err(error)
+    }
     async fn create_project(
         &self,
         ctx: &Context<'_>,
         slug: String,
         name: String,
     ) -> async_graphql::Result<Project> {
-        if !access(ctx)?.is_root() {
+        let permissions = access(ctx)?;
+        if let Some(creator) = ctx.data_opt::<std::sync::Arc<dyn ProjectCreator>>() {
+            return Ok(Project::from(
+                creator
+                    .create(store(ctx)?, &slug, &name)
+                    .await
+                    .map_err(error)?,
+            ));
+        }
+        if !permissions.is_root() {
             return Err(denied(
                 "only the instance administrator can create projects",
             ));
@@ -303,6 +549,15 @@ impl Mutation {
         admin(ctx, project_id)?;
         let settings: ProjectSettings = serde_json::from_value(settings.0)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        if let Some(maximum) = ctx
+            .data_opt::<ProjectPolicy>()
+            .and_then(|p| p.max_retention_days)
+            && settings.retention_days.is_none_or(|days| days > maximum)
+        {
+            return Err(error(StorageError::Invalid(format!(
+                "This plan allows up to {maximum} days of retention."
+            ))));
+        }
         Ok(store(ctx)?
             .update_settings(project_id, settings)
             .await
@@ -342,6 +597,14 @@ impl Mutation {
         role: ProjectRole,
     ) -> async_graphql::Result<IssuedKey> {
         admin(ctx, project_id)?;
+        if ctx
+            .data_opt::<ProjectPolicy>()
+            .is_some_and(|p| !p.allow_access_keys)
+        {
+            return Err(denied(
+                "This host uses member sessions for dashboard access.",
+            ));
+        }
         Ok(store(ctx)?
             .issue_access_key(project_id, &name, role.into())
             .await
@@ -416,6 +679,10 @@ impl Mutation {
             .refresh_reports(project_id, now)
             .await
             .map_err(error)?;
+        storage
+            .evaluate_segments(project_id, now)
+            .await
+            .map_err(error)?;
         Ok(true)
     }
     async fn save_mixpanel_destination(
@@ -428,13 +695,15 @@ impl Mutation {
         admin(ctx, project_id)?;
         let validated = clickman_destinations::MixpanelConfig::parse(project_id, config.0)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        let config = serde_json::to_value(validated).unwrap();
+        if let Some(policy) = ctx.data_opt::<std::sync::Arc<dyn IntegrationPolicy>>() {
+            policy
+                .validate(project_id, "mixpanel", &config)
+                .await
+                .map_err(error)?;
+        }
         let d = store(ctx)?
-            .save_destination(
-                project_id,
-                &name,
-                "mixpanel",
-                serde_json::to_value(validated).unwrap(),
-            )
+            .save_destination(project_id, &name, "mixpanel", config)
             .await
             .map_err(error)?;
         Ok(Destination {

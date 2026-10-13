@@ -44,14 +44,20 @@ pub struct Occurrence {
 #[error("invalid funnel: {0}")]
 pub struct FunnelError(String);
 
-fn duration(value: &str) -> Result<Duration, FunnelError> {
-    let (digits, unit) = value.split_at(value.len().saturating_sub(1));
+pub(crate) fn duration(value: &str) -> Result<Duration, FunnelError> {
+    let (digits, unit) = if let Some(digits) = value.strip_suffix('h') {
+        (digits, 'h')
+    } else if let Some(digits) = value.strip_suffix('d') {
+        (digits, 'd')
+    } else {
+        return Err(FunnelError("duration must look like 12h or 7d".into()));
+    };
     let number: i64 = digits
         .parse()
         .map_err(|_| FunnelError("duration must look like 12h or 7d".into()))?;
     let hours = match unit {
-        "h" => Some(number),
-        "d" => number.checked_mul(24),
+        'h' => Some(number),
+        'd' => number.checked_mul(24),
         _ => None,
     }
     .filter(|h| (1..=24 * 365).contains(h))
@@ -67,7 +73,7 @@ impl Step {
             _ => vec![],
         }
     }
-    fn matches(&self, occurrence: &Occurrence) -> bool {
+    pub fn matches(&self, occurrence: &Occurrence) -> bool {
         self.events().contains(&occurrence.event.as_str())
             && self.filters.iter().all(|(key, value)| {
                 let actual = occurrence.fields.get(key).unwrap_or(&Value::Null);
@@ -150,45 +156,13 @@ impl Funnel {
             .collect()
     }
     pub fn compute(&self, occurrences: Vec<Occurrence>, now: DateTime<Utc>) -> Value {
-        let mut journeys: HashMap<i64, Vec<Occurrence>> = HashMap::new();
-        for occurrence in occurrences {
-            journeys
-                .entry(occurrence.actor)
-                .or_default()
-                .push(occurrence);
-        }
         let size = self.steps.len();
         let mut reached = vec![0u64; size];
         let mut gaps: Vec<Vec<f64>> = vec![Vec::new(); size];
         let mut days: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         let mut values: HashMap<String, (Value, Vec<u64>)> = HashMap::new();
-        let first = self.from(now).timestamp_millis();
-        let last = now.timestamp_millis();
-        for mut journey in journeys.into_values() {
-            journey.sort_by_key(|o| o.at);
-            let Some(mut position) = journey
-                .iter()
-                .position(|o| (first..=last).contains(&o.at) && self.steps[0].matches(o))
-            else {
-                continue;
-            };
-            let mut path = vec![position];
-            let deadline = journey[position].at
-                + duration(&self.window)
-                    .expect("validated funnel")
-                    .num_milliseconds();
-            for step in self.steps.iter().skip(1) {
-                let Some(next) = (position + 1..journey.len()).find(|i| step.matches(&journey[*i]))
-                else {
-                    break;
-                };
-                if journey[next].at > deadline || journey[next].at > last {
-                    break;
-                }
-                position = next;
-                path.push(position);
-            }
-            let entry = &journey[path[0]];
+        for path in self.paths(occurrences, now) {
+            let entry = &path[0];
             let day = DateTime::from_timestamp_millis(entry.at)
                 .expect("valid occurrence")
                 .date_naive()
@@ -203,14 +177,12 @@ impl Funnel {
             let (_, split) = values
                 .entry(value.to_string())
                 .or_insert_with(|| (value, vec![0; size]));
-            for (index, position) in path.iter().enumerate() {
+            for (index, occurrence) in path.iter().enumerate() {
                 reached[index] += 1;
                 daily[index] += 1;
                 split[index] += 1;
                 if index > 0 {
-                    gaps[index].push(
-                        (journey[*position].at - journey[path[index - 1]].at) as f64 / 1000.0,
-                    );
+                    gaps[index].push((occurrence.at - path[index - 1].at) as f64 / 1000.0);
                 }
             }
         }
@@ -243,11 +215,76 @@ impl Funnel {
         });
         json!({"key": self.key, "name": self.name, "steps": steps, "days": days.into_iter().map(|(day, actors)| json!({"day":day, "actors":actors})).collect::<Vec<_>>(), "breakdown_key":self.breakdown, "breakdown":breakdown.into_iter().take(10).map(|(value, actors)|json!({"value":value,"actors":actors})).collect::<Vec<_>>()})
     }
+
+    /// One first-entry journey per actor, shared by reports and saved segments.
+    pub fn paths(&self, occurrences: Vec<Occurrence>, now: DateTime<Utc>) -> Vec<Vec<Occurrence>> {
+        let mut journeys: HashMap<i64, Vec<Occurrence>> = HashMap::new();
+        for occurrence in occurrences {
+            journeys
+                .entry(occurrence.actor)
+                .or_default()
+                .push(occurrence);
+        }
+        let first = self.from(now).timestamp_millis();
+        let last = now.timestamp_millis();
+        let mut result = Vec::new();
+        for mut journey in journeys.into_values() {
+            let rank = |o: &Occurrence| {
+                self.steps
+                    .iter()
+                    .position(|s| s.matches(o))
+                    .unwrap_or(self.steps.len())
+            };
+            journey.sort_by(|a, b| {
+                a.at.cmp(&b.at)
+                    .then_with(|| rank(a).cmp(&rank(b)))
+                    .then(a.event.cmp(&b.event))
+                    .then_with(|| {
+                        serde_json::to_string(&a.fields)
+                            .expect("JSON fields")
+                            .cmp(&serde_json::to_string(&b.fields).expect("JSON fields"))
+                    })
+            });
+            let Some(mut position) = journey
+                .iter()
+                .position(|o| (first..=last).contains(&o.at) && self.steps[0].matches(o))
+            else {
+                continue;
+            };
+            let deadline = journey[position].at
+                + duration(&self.window)
+                    .expect("validated funnel")
+                    .num_milliseconds();
+            let mut path = vec![journey[position].clone()];
+            for step in self.steps.iter().skip(1) {
+                let Some(next) = (position + 1..journey.len()).find(|i| step.matches(&journey[*i]))
+                else {
+                    break;
+                };
+                if journey[next].at > deadline || journey[next].at > last {
+                    break;
+                }
+                position = next;
+                path.push(journey[position].clone());
+            }
+            result.push(path);
+        }
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unicode_duration_is_rejected_without_panicking() {
+        for value in ["д", "12д", "💥", "12💥", ""] {
+            let parsed = Funnel::parse(
+                json!({"key":"invalid","name":"Invalid","steps":[{"event":"view"},{"event":"buy"}],"window":value}),
+            );
+            assert!(parsed.is_err());
+        }
+    }
     #[test]
     fn first_entry_only_and_filter_order_and_window() {
         let f = Funnel::parse(json!({"key":"purchase","name":"Purchase","steps":[{"event":["view","upsell"]},{"event":"start"},{"event":"buy","where":{"store":"ios"}}],"window":"1d","breakdown":"os"})).unwrap();

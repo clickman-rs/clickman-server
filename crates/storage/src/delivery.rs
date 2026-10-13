@@ -1,4 +1,4 @@
-use crate::{Error, ProjectSettings, Result, Storage, lock_project, sql};
+use crate::{Error, MetadataStore, ProjectSettings, Result, lock_project, sql};
 use chrono::{DateTime, Duration, Utc};
 use sea_orm::{ConnectionTrait, DatabaseTransaction, TransactionTrait};
 use serde::{Deserialize, Serialize};
@@ -47,7 +47,7 @@ impl DeliveryPage {
     }
 }
 
-impl Storage {
+impl MetadataStore {
     pub async fn destinations(&self, project: Uuid) -> Result<Vec<Destination>> {
         self.db.query_all_raw(sql("SELECT id,project_id,name,kind,config FROM clickman_destinations WHERE project_id=$1 ORDER BY name",vec![project.into()])).await?.into_iter().map(|r|Ok(Destination{id:r.try_get("","id")?,project_id:r.try_get("","project_id")?,name:r.try_get("","name")?,kind:r.try_get("","kind")?,config:r.try_get("","config")?})).collect()
     }

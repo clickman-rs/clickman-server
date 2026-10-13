@@ -14,7 +14,13 @@
     projectId,
     settings,
     onchanged,
-  }: { projectId: string; settings: Settings; onchanged: () => Promise<void> } = $props();
+    maxRetentionDays,
+  }: {
+    projectId: string;
+    settings: Settings;
+    onchanged: () => Promise<void>;
+    maxRetentionDays?: number;
+  } = $props();
   const action = createAction();
   const update = createMutation<UpdateSettingsMutation, UpdateSettingsMutationVariables>({
     query: UpdateSettingsDocument,
@@ -22,11 +28,18 @@
   let saved = $state('');
   let maxAge = $state(untrack(() => settings.max_event_age_days));
   let dedup = $state(untrack(() => settings.dedup_window_days));
-  let retention = $state<number | undefined>(untrack(() => settings.retention_days ?? undefined));
+  let retention = $state<number | undefined>(
+    untrack(() =>
+      maxRetentionDays === undefined
+        ? (settings.retention_days ?? undefined)
+        : Math.min(settings.retention_days ?? maxRetentionDays, maxRetentionDays),
+    ),
+  );
   let lag = $state(untrack(() => settings.rotation_lag_seconds));
   let rate = $state(untrack(() => settings.rate_limit.per_second));
   let burst = $state(untrack(() => settings.rate_limit.burst));
   let fragments = $state(untrack(() => settings.filter_fragments.join(', ')));
+  let origins = $state(untrack(() => (settings.allowed_origins ?? []).join(', ')));
   function saveSettings(event: SubmitEvent) {
     event.preventDefault();
     saved = '';
@@ -35,6 +48,10 @@
         await update.execute({
           projectId,
           settings: {
+            allowed_origins: origins
+              .split(',')
+              .map((v) => v.trim())
+              .filter(Boolean),
             filter_fragments: fragments
               .split(',')
               .map((value) => value.trim())
@@ -85,9 +102,12 @@
           type="number"
           bind:value={retention}
           min="1"
-          max="36500"
-          placeholder="Keep forever"
-        /></label
+          max={maxRetentionDays ?? 36500}
+          placeholder={maxRetentionDays ? `Up to ${maxRetentionDays} days` : 'Keep forever'}
+          required={maxRetentionDays !== undefined}
+        />{#if maxRetentionDays}<span class="cm:text-xs cm:font-normal cm:text-muted"
+            >Your plan includes up to {maxRetentionDays} days.</span
+          >{/if}</label
       >
       <label
         >Processing delay (seconds)<input
@@ -118,6 +138,15 @@
         >Sensitive property fragments<input bind:value={fragments} /><span
           class="cm:text-xs cm:font-normal cm:text-muted"
           >Comma-separated fragments. Matching properties are filtered before storage.</span
+        ></label
+      >
+      <label class="cm:sm:col-span-2 cm:lg:col-span-3"
+        >Browser origins<input
+          bind:value={origins}
+          placeholder="https://example.com, https://staging.example.com"
+        /><span class="cm:text-xs cm:font-normal cm:text-muted"
+          >Optional comma-separated origins. Native SDKs continue to work without an Origin header.
+          Public write keys still require rate limits.</span
         ></label
       >
       <p class="cm:text-xs cm:text-muted cm:sm:col-span-2 cm:lg:col-span-3">

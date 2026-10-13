@@ -21,6 +21,7 @@ impl Default for RateLimit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectSettings {
+    pub allowed_origins: Vec<String>,
     pub filter_fragments: Vec<String>,
     pub max_event_age_days: u32,
     pub dedup_window_days: u32,
@@ -31,6 +32,7 @@ pub struct ProjectSettings {
 impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
+            allowed_origins: Vec::new(),
             filter_fragments: clickman_protocol::DEFAULT_FRAGMENTS
                 .iter()
                 .map(|v| (*v).to_string())
@@ -44,7 +46,39 @@ impl Default for ProjectSettings {
     }
 }
 impl ProjectSettings {
+    pub fn accepts_origin(&self, origin: Option<&str>) -> bool {
+        let Some(origin) = origin else {
+            return true;
+        };
+        if self.allowed_origins.is_empty() {
+            return true;
+        }
+        let Ok(origin) = url::Url::parse(origin) else {
+            return false;
+        };
+        self.allowed_origins.iter().any(|candidate| {
+            url::Url::parse(candidate).is_ok_and(|c| c.origin() == origin.origin())
+        })
+    }
     pub fn validate(&self) -> Result<()> {
+        if self.allowed_origins.len() > 50
+            || self.allowed_origins.iter().any(|o| {
+                o.len() > 2048
+                    || url::Url::parse(o).map_or(true, |u| {
+                        !matches!(u.scheme(), "http" | "https")
+                            || u.host_str().is_none()
+                            || u.path() != "/"
+                            || u.query().is_some()
+                            || u.fragment().is_some()
+                            || !u.username().is_empty()
+                            || u.password().is_some()
+                    })
+            })
+        {
+            return Err(Error::Invalid(
+                "allowed_origins must contain up to 50 HTTP(S) origins".into(),
+            ));
+        }
         if !(1..=3650).contains(&self.max_event_age_days)
             || !(1..=365).contains(&self.dedup_window_days)
             || self.retention_days.is_some_and(|v| v == 0 || v > 36500)

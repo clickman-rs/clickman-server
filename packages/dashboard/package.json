@@ -1,6 +1,6 @@
 {
   "name": "@clickman/dashboard",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
@@ -27,7 +27,11 @@
       "svelte": "./dist/index.js",
       "default": "./dist/index.js"
     },
-    "./styles.css": "./dist/styles.css"
+    "./styles.css": "./dist/styles.css",
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    }
   },
   "scripts": {
     "generate": "graphql-codegen --config codegen.ts",

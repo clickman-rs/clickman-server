@@ -40,25 +40,25 @@ inside applications and are therefore public; they authorize writes only.
 }
 ```
 
-| Field | Rule |
-|---|---|
-| `sentAt` | REQUIRED. RFC 3339 time at which the client sent the batch, by the client clock. |
-| `batch` | REQUIRED. 1–500 events. |
+| Field     | Rule                                                                                        |
+| --------- | ------------------------------------------------------------------------------------------- |
+| `sentAt`  | REQUIRED. RFC 3339 time at which the client sent the batch, by the client clock.            |
+| `batch`   | REQUIRED. 1–500 events.                                                                     |
 | `context` | OPTIONAL object. Deep-merged under every event's own `context`; the event wins on conflict. |
 
 Unknown top-level fields are ignored.
 
 ## Event
 
-| Field | Rule |
-|---|---|
-| `type` | REQUIRED. `"track"`. Other values are rejected with `unsupported_type`. |
-| `messageId` | REQUIRED. A UUID; clients SHOULD use UUIDv7. The deduplication key. |
-| `event` | REQUIRED. 1–200 characters, no control characters. |
-| `externalId` | REQUIRED. 1–256 characters. `"*"` is the anonymous actor. |
-| `timestamp` | REQUIRED. RFC 3339 time of the event, by the client clock. |
-| `properties` | OPTIONAL object. |
-| `context` | OPTIONAL object. |
+| Field        | Rule                                                                    |
+| ------------ | ----------------------------------------------------------------------- |
+| `type`       | REQUIRED. `"track"`. Other values are rejected with `unsupported_type`. |
+| `messageId`  | REQUIRED. A UUID; clients SHOULD use UUIDv7. The deduplication key.     |
+| `event`      | REQUIRED. 1–200 characters, no control characters.                      |
+| `externalId` | REQUIRED. 1–256 characters. `"*"` is the anonymous actor.               |
+| `timestamp`  | REQUIRED. RFC 3339 time of the event, by the client clock.              |
+| `properties` | OPTIONAL object.                                                        |
+| `context`    | OPTIONAL object.                                                        |
 
 Unknown event fields are ignored.
 
@@ -73,13 +73,13 @@ text at the fifth level.
 
 Standard context keys, filled by the SDKs:
 
-| Key | Example |
-|---|---|
+| Key                                                     | Example                                     |
+| ------------------------------------------------------- | ------------------------------------------- |
 | `app.name`, `app.version`, `app.build`, `app.namespace` | `Example`, `1.40`, `412`, `com.example.app` |
-| `device.manufacturer`, `device.model`, `device.type` | `Apple`, `iPhone17,1`, `ios` |
-| `os.name`, `os.version` | `iOS`, `26.1` |
-| `library.name`, `library.version` | `clickman-swift`, `0.1.0` |
-| `locale`, `timezone` | `ru-RU`, `Europe/Moscow` |
+| `device.manufacturer`, `device.model`, `device.type`    | `Apple`, `iPhone17,1`, `ios`                |
+| `os.name`, `os.version`                                 | `iOS`, `26.1`                               |
+| `library.name`, `library.version`                       | `clickman-swift`, `0.1.0`                   |
+| `locale`, `timezone`                                    | `ru-RU`, `Europe/Moscow`                    |
 
 ## Time
 
@@ -118,16 +118,16 @@ database can resolve to a person. The server stores no IP address.
 
 ## Responses
 
-| Status | Body | Client action |
-|---|---|---|
-| `202` | `{"accepted": n, "duplicates": n, "rejected": [{"index": i, "messageId": "…", "reason": "…"}]}` | Drop the batch. |
-| `400` | `{"error": "malformed_batch", "message": "…"}` | Drop the batch. |
-| `401` | `{"error": "invalid_write_key"}` | Retry with backoff. |
-| `413` | `{"error": "batch_too_large"}` | Drop the batch. |
-| `415` | `{"error": "unsupported_encoding"}` | Drop the batch. |
-| `429` | `{"error": "rate_limited"}` + `Retry-After` | Retry after the given delay. |
-| `5xx` | any | Retry with backoff. |
-| any other, or no response | | Retry with backoff. |
+| Status                    | Body                                                                                            | Client action                |
+| ------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------- |
+| `202`                     | `{"accepted": n, "duplicates": n, "rejected": [{"index": i, "messageId": "…", "reason": "…"}]}` | Drop the batch.              |
+| `400`                     | `{"error": "malformed_batch", "message": "…"}`                                                  | Drop the batch.              |
+| `401`                     | `{"error": "invalid_write_key"}`                                                                | Retry with backoff.          |
+| `413`                     | `{"error": "batch_too_large"}`                                                                  | Drop the batch.              |
+| `415`                     | `{"error": "unsupported_encoding"}`                                                             | Drop the batch.              |
+| `429`                     | `{"error": "rate_limited"}` + `Retry-After`                                                     | Retry after the given delay. |
+| `5xx`                     | any                                                                                             | Retry with backoff.          |
+| any other, or no response |                                                                                                 | Retry with backoff.          |
 
 Rejection reasons: `unsupported_type`, `invalid_message_id`, `invalid_event`,
 `invalid_external_id`, `invalid_timestamp`, `timestamp_out_of_range`,
@@ -141,7 +141,40 @@ Delivery is at-least-once. The server deduplicates on `messageId` for as long
 as it keeps raw events (the `dedup_window`, default 7 days); a duplicate is
 counted in `duplicates` and not stored again.
 
-## Clients
+## Browser identity linking and origins
+
+The browser SDK uses the same batch shape and an `anon:<UUID>` visitor ID until
+the host identifies an account. Unlike the literal `*`, this stable pseudonymous
+ID participates in visitor counts. Do not send an email address as an ID.
+
+```http
+POST /v1/identify
+Authorization: Bearer <write key>
+Content-Type: application/json
+
+{"anonymousId":"anon:01926a2e-7b1c-7c3d-9f2e-5b1a2c3d4e5f","externalId":"account_42"}
+```
+
+This separate 4 KiB request returns `204` on success. Repeating the same link is
+idempotent; rebinding an existing visitor to another account returns `422`.
+Invalid/revoked keys return `401`; rate/capacity limits return `429`; unavailable
+storage returns `503`. The browser queue sends preceding anonymous events, then
+the link, then subsequent account events. `reset()` creates a new visitor before
+another account is identified. Linking without any events creates no activity
+or retention cohort. This route does not change native SDK identity behavior.
+
+Only batch and identify expose browser CORS. A project's `allowed_origins` may
+contain exact HTTP(S) origins. An empty list permits any browser origin;
+configured lists reject unlisted POST origins with `403`. Native requests without
+`Origin` still work. Preflight does not authenticate ingestion; the actual POST
+checks both the write key and origin. Dashboard GraphQL has no public CORS policy.
+
+The browser SDK stores a bounded IndexedDB queue with persisted retry deadlines
+and a cross-tab delivery lease. Page/SPA tracking is explicit and requires
+consent; it does not enable native install/open/background lifecycle events.
+See `clickman-js/README.md` for the browser API and archive distribution.
+
+## Native clients
 
 The Swift, Kotlin and Rust clients each implement this section natively. They
 embed one store schema, `protocol/queue.sql`, and every client runs the shared

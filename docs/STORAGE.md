@@ -12,10 +12,16 @@ SDKs use the unchanged [v1 batch protocol](PROTOCOL.md). The server derives the 
 
 ## Storage and jobs
 
-Events rotate into up to 4096-event chunks: delta-encoded UTC times, actor IDs and property columns, encoded as MessagePack and Zstandard. Changing property keys and large values produce smaller chunks to bound the column matrix before allocation. PostgreSQL stores the payload externally without recompressing it. Activity uses 366-bit annual maps. Reports include DAU/WAU/MAU, exact D1/D7/D30 cohort retention, distinct users per event, ordered funnels, median transition times and property breakdowns. Anonymous events contribute event counts and do not contribute identified-user metrics.
+With the PostgreSQL adapter, events rotate into up to 4096-event chunks: delta-encoded UTC times, actor IDs and property columns, encoded as MessagePack and Zstandard. Changing property keys and large values produce smaller chunks to bound the column matrix before allocation. PostgreSQL stores the payload externally without recompressing it. Activity uses 366-bit annual maps. Reports include DAU/WAU/MAU, exact D1/D7/D30 cohort retention, distinct users per event, ordered funnels, median transition times and property breakdowns. The literal `*` contributes event counts without a distinct actor. Browser `anon:<UUID>` visitors count as distinct actors and can later be linked to an opaque account ID.
 
 Rotation processes unrotated rows and marks them atomically with the chunk and activity updates, rather than advancing a receive-time cursor. This includes late commits and supports retry after failure. Project row locks serialize rotations, erasure, report refresh and delivery. Ingest takes a shared project lock, so erasure cannot race an unfinished ingest transaction.
 
 Destinations have a durable outbox. A failed page keeps raw events and records a persistent retry deadline. Delivery is at least once: a network success followed by process death can resend the page. The Mixpanel adapter supplies stable `$insert_id` values. Credentials are environment references scoped to a project: `CLICKMAN_<PROJECT_UUID_WITHOUT_HYPHENS_UPPERCASE>_MIXPANEL_USERNAME` and `CLICKMAN_<PROJECT_UUID_WITHOUT_HYPHENS_UPPERCASE>_MIXPANEL_SECRET`. The UI supplies these names. Set them on the worker (or embedded host); project admins cannot reference other projects' or the host's secrets. Custom embedded destinations implement `clickman_destinations::Dispatcher`. Adding a destination backfills retained raw events. Removing it releases its retention hold. The cron tick is ephemeral; all unfinished work and retry state are in PostgreSQL and are recovered on startup.
 
 Retention deletes complete months per project. Erasure deletes raw events and pending delivery entries, rewrites affected chunks, clears activity and leaves an actor tombstone. Cached reports are invalidated; they are recomputed on the next cycle. Future events for that external ID create a new actor. Already-forwarded data must be erased at its destination.
+
+The ClickHouse adapter retains PostgreSQL as its metadata/inbox store and writes
+native deduplicated analytics rows before acknowledging the inbox. Its retention
+and erasure use synchronous native mutations. Identity-family erasure and pending
+segment entries/webhook payloads are included in both modes. See
+[platform architecture](PLATFORM.md) for adapter, segment and webhook contracts.

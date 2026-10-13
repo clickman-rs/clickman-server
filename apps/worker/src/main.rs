@@ -23,7 +23,9 @@ async fn main() -> Result<()> {
         )
         .init();
     let url = std::env::var("DATABASE_URL").context("DATABASE_URL is required")?;
-    let storage = clickman_storage::Storage::connect(&url, 4).await?;
+    let storage = clickman_storage::Storage::connect(&url, 4)
+        .await?
+        .with_analytics_adapter(clickman_storage::adapters::from_environment()?);
     storage.migrate().await?;
     let engine = Engine::new(storage)?;
     // Run immediately after restart; missed cron ticks are not durable work.

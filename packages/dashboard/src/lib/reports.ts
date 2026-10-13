@@ -24,6 +24,7 @@ export interface FunnelReport {
   breakdown: { value: unknown; actors: number[] }[];
 }
 export interface Settings {
+  allowed_origins?: string[];
   filter_fragments: string[];
   max_event_age_days: number;
   dedup_window_days: number;

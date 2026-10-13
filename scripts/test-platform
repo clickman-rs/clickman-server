@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [[ -n "${CLICKMAN_POSTGRES_BIN:-}" ]]; then
+  export PATH="$CLICKMAN_POSTGRES_BIN:$PATH"
+elif [[ ! -x "$(dirname "$(command -v initdb)")/postgres" && -d /Applications/Postgres.app/Contents/Versions/latest/bin ]]; then
+  export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"
+fi
+command -v postgres >/dev/null || { echo 'Set CLICKMAN_POSTGRES_BIN to a PostgreSQL server bin directory' >&2; exit 1; }
+world=$(mktemp -d "${TMPDIR:-/tmp}/clickman-platform.XXXXXX")
+container=
+started=false
+with_clickhouse=false
+cleanup() {
+  local status=$?
+  if [[ -n "$container" ]]; then
+    if ! docker rm -f "$container" >"$world/container-cleanup.log" 2>&1; then
+      cat "$world/container-cleanup.log" >&2
+      status=1
+    fi
+  fi
+  if [[ "$started" == true || -f "$world/postgres/postmaster.pid" ]]; then
+    if ! pg_ctl -D "$world/postgres" -m immediate -w stop >"$world/cleanup.log" 2>&1; then
+      cat "$world/cleanup.log" >&2
+      echo "PostgreSQL did not stop; files retained at $world" >&2
+      exit 1
+    fi
+  fi
+  rm -rf "$world"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+initdb -D "$world/postgres" -U clickman_test -A trust --no-locale --encoding=UTF8 >/dev/null
+pg_ctl -D "$world/postgres" -l "$world/postgres.log" -o "-h 127.0.0.1 -p $port -k $world" start >/dev/null
+started=true
+createdb -h 127.0.0.1 -p "$port" -U clickman_test clickman_platform
+export TEST_DATABASE_URL="postgres://clickman_test@127.0.0.1:$port/clickman_platform"
+export CLICKMAN_TEST_OWNED=1
+if [[ "${1:-}" == --clickhouse ]]; then
+  with_clickhouse=true
+  shift
+  container=$(docker run -d --rm -p 127.0.0.1::8123 \
+    -e CLICKHOUSE_USER=clickman_test -e CLICKHOUSE_PASSWORD=platform-test-only \
+    -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 clickhouse/clickhouse-server:26.9)
+  http_port=$(docker port "$container" 8123/tcp | sed 's/.*://')
+  export TEST_CLICKHOUSE_URL="http://127.0.0.1:$http_port"
+  export TEST_CLICKHOUSE_USER=clickman_test
+  export TEST_CLICKHOUSE_PASSWORD=platform-test-only
+  python3 - "$TEST_CLICKHOUSE_URL" <<'PY'
+import sys, time, urllib.request
+deadline=time.monotonic()+60
+while time.monotonic()<deadline:
+    try:
+        with urllib.request.urlopen(sys.argv[1]+'/ping', timeout=1) as response:
+            if response.status == 200:
+                break
+    except OSError:
+        time.sleep(.2)
+else:
+    raise SystemExit('Owned ClickHouse did not become ready within 60 seconds')
+PY
+fi
+if [[ "$#" == 0 ]]; then
+  if [[ "$with_clickhouse" == true ]]; then
+    cargo test --workspace --locked -- --include-ignored
+  else
+    cargo test --workspace --locked -- --include-ignored --skip clickhouse_
+  fi
+else
+  "$@"
+fi

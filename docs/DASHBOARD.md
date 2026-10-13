@@ -90,3 +90,133 @@ Standalone Bearer login is not configured in that host: `/analytics/graphql`
 uses the default deny authenticator and rejects even valid project access keys.
 Issuing/revoking keys is separate from enabling their authentication workflow.
 No live Mixpanel delivery is claimed by these checks.
+
+## Platform implementation — approved scope
+
+The next approved stage keeps Clickman an independent, embeddable open-source
+engine. SaaS consumes its public Rust APIs and the shared Svelte workspace.
+Organizations, authentication, subscriptions and the browser agent belong to
+`clickman-saas`; collection belongs to `clickman-js`; marketing belongs to
+`clickman-landing`. PostgreSQL remains the transactional control store, with
+PostgreSQL and ClickHouse analytics adapters. Ferment keeps staff-session access.
+
+The agent loop and tools execute in the browser. Fireworks runs inference; the
+Rust host owns credentials, authenticated proxying, usage limits and ordinary API
+authorization. Browser tools share the typed Clickman GraphQL client with the UI.
+
+Implementation and acceptance checklist:
+
+- [x] Analytics contract and PostgreSQL adapter, preserving host transactions.
+- [x] ClickHouse adapter with durable handoff, replay, retention and erasure.
+- [x] Common backend conformance tests and comparative load measurements.
+- [x] SaaS registration, email verification/reset, sessions and organizations.
+- [x] Projects, invitation acceptance, Owner/Admin/Viewer roles and isolation.
+- [x] SaaS SvelteKit shell, shared dashboard and first-event onboarding.
+- [x] Browser TypeScript collection SDK, durable queue and identity linking.
+- [x] Segments, entry transitions, signed webhooks, retry/replay and Zapier hooks.
+- [x] Free/Paid plan catalog, organization usage and Stripe subscription lifecycle.
+- [x] Browser agent with tools, streaming, previews, cancellation and usage budget.
+- [x] Prerendered landing, self-host/cloud paths, pricing and documentation.
+- [x] CI, owned database/browser tests, deployment artifacts and recovery checks.
+- [x] Final separate review and local end-to-end product acceptance.
+
+Prices, event limits and Stripe Price IDs are configuration, not branches in the
+billing implementation. Registry publication and pushes remain deferred by the
+user. This checklist covers the implemented platform and local acceptance below;
+it does not claim a live provider-account release or production deployment.
+
+### Early core adapter verification
+
+The primary agent reviewed the actual facade/metadata/adapter boundary separately
+from implementation. PostgreSQL uses the supplied metadata transaction. ClickHouse
+uses the durable PostgreSQL inbox and native ReplacingMergeTree rows; the logical
+key includes the original receipt time so a new acceptance outside the dedup
+window remains a new event. Rotation retries preserve raw inbox work, native
+queries deduplicate replay, and source revocation is checked during acceptance.
+Remote analytics explicitly rejects caller-transaction execution rather than
+claiming a transaction across databases. Ferment's PostgreSQL path retains its
+existing atomicity.
+
+An opaque project namespace provides per-host slug uniqueness. A request-local
+ProjectCreator capability lets an authenticated host create and attach projects
+without granting global read/admin rights. Standalone creation keeps the empty
+namespace and instance-root policy. The SQL migration is additive; rollback
+refuses to discard populated namespaces.
+
+37 Rust tests passed with zero failures/ignored outcomes using owned PostgreSQL
+and ClickHouse 26.9. This includes all prior PostgreSQL scenarios, full report
+parity, failed-export recovery, replay, late data, retention, erasure, revoked
+source keys and host-creation transaction rollback. Workspace/all-target Clippy
+with warnings denied passed. Logs: `/tmp/clickman-platform-core-full-1.log` and
+`/tmp/clickman-platform-core-clippy-1.log`. The first native run stopped because a
+new dependency required updating Cargo.lock; it did not pass. SaaS, collection,
+segments, billing, agent and landing were still pending at that point. The final
+acceptance below supersedes that interim status.
+
+### Platform acceptance — 14 October 2026
+
+The primary agent completed a separate review of the actual public entries,
+storage/adapters, host policies, worker ownership, browser lifetimes, billing,
+credentials and distribution. The component boundaries and operator contracts
+are documented in [PLATFORM.md](PLATFORM.md); Cloud, browser SDK and landing
+have their own setup/readme files. No unresolved implementation finding remains
+in the agreed scope. This is local acceptance with owned provider fixtures.
+
+Review findings were fixed and verified:
+
+- Identity-only actors created ghost retention cohorts. PostgreSQL and native
+  ClickHouse regressions failed first, then passed after adding observed-event
+  markers and canonical first-observation propagation.
+- Editing a paused segment reenabled it. The browser regression now checks that
+  the saved segment remains paused and its scoped Zapier configuration works.
+- Parallel agent writes overwrote one pending review. Real SDK unit scenarios
+  now verify serialized approval/decline, permission rechecks and cancellation.
+- Selected-project revocation retained the old cache/draft when the role stayed
+  Admin. Membership now includes sorted grants; the browser disposes the scope
+  and clears the revoked route. The test failed before the fix and passes after.
+- SMTP failures lacked a persistent retry deadline. The real Apalis/SMTP test
+  checks failure, deadline, process restart and successful resumed delivery.
+- Empty migration rollback was unconditionally refused. Repeated empty down/up
+  works; populated identity/segment/namespace data is protected by guarded locks.
+- SPA direct links returned HTML with 404. Owned HTTP tests cover 200 navigation
+  and preserved API rejection; Ferment also retains JSON 404 for unknown API paths.
+- The non-root Docker image needed a writable development-mail directory. The
+  production image smoke checks delivery, sessions, reports and restart.
+
+| Check                                                   | Actual result / evidence                                                                                                                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Core Rust, PostgreSQL + native ClickHouse 26.9          | 52 passed, zero failed/ignored; `/tmp/clickman-core-platform-final-2.log`                                                                                                                                                      |
+| Core formatting / strict all-target Clippy              | Passed; `/tmp/clickman-core-{rustfmt,clippy}-final*.log`                                                                                                                                                                       |
+| Shared client / standalone units                        | 5 client + 4 transport cases passed; `/tmp/clickman-core-{client,web}-unit-final.log`                                                                                                                                          |
+| Svelte/types, formatting, packed external consumer      | Passed; `/tmp/clickman-core-{web-check,format,package}-final.log`                                                                                                                                                              |
+| Standalone and `/analytics` browser mounts              | 10 cases each passed; `/tmp/clickman-core-browser-platform-3.log`, `/tmp/clickman-core-prefix-final.log`                                                                                                                       |
+| Cloud backend                                           | 8 passed, zero failed/ignored; `/tmp/clickman-saas-backend-final-2.log` includes native quota/inbox/report and concurrent empty bootstrap                                                                                      |
+| Cloud agent SDK / browser / types / formatting / Clippy | 7 SDK unit + 4 browser cases passed; `/tmp/clickman-saas-{unit, browser, check, format, clippy}-final*.log`                                                                                                                    |
+| Browser collection                                      | 42 unit + 2 real IndexedDB browser cases; `/tmp/clickman-js-tests-2.log`, `/tmp/clickman-js-browser-1.log`; real Rust ingestion/identify in Cloud browser suite                                                                |
+| Cloud dump/restore and process restart                  | Passed with original cookie/source/ref and resumed worker reports; `/tmp/clickman-saas-recovery-final.log`                                                                                                                     |
+| Docker release image / non-root API + worker            | Built and smoke passed; `/tmp/clickman-saas-docker-build-final-2.log`, `/tmp/clickman-saas-container-final-3.log`                                                                                                              |
+| Ferment compatibility                                   | Rust compile and zero-error Svelte check; 3 owned HTTP/worker cases + 27 browser cases, zero skipped/flaky/failed; `/tmp/ferment-clickman-platform-extended-green-2.log`, `/tmp/ferment-clickman-platform-browser-final-2.log` |
+| Landing                                                 | Astro zero diagnostics, 9 static routes and 2 browser cases; `/tmp/clickman-landing-{check,build,browser,format}-final.log`                                                                                                    |
+
+The shared dashboard is packed as 0.2.1 and the browser SDK as 0.1.0. Cloud,
+Ferment and the landing consume portable archives, with frozen-lock installs.
+The landing uses Astro 5/Tailwind 4 and Cloudflare Pages Git builds, matching the
+Ferment landing's stack/hosting model. Its demo uses the actual shared dashboard
+with explicitly fictional readonly data. A Cloud URL and site URL are configured
+at deployment; no live hosted service or invented paid price is advertised.
+
+The owned 20,000-event/2,000-actor sample measured PostgreSQL
+ingest/rotation/reports at 808/1229/195 ms and Docker ClickHouse at
+1335/1651/336 ms. ClickHouse was slower in this sample; it establishes neither
+a production capacity limit nor a speedup. See the benchmark command/example
+and `/tmp/clickman-platform-backend-benchmark-20000.log`.
+
+Stripe, Fireworks, SMTP and webhook failure/replay are covered with local
+provider fixtures, including real client SDKs/transports. Live Stripe-account
+Checkout/webhook/Portal, actual Fireworks model inference and production SMTP
+credentials still require operator configuration and account-level acceptance.
+Zapier support is Catch Hook delivery, without a marketplace OAuth application.
+GitHub workflows are committed source and locally exercised checks; they have
+not been dispatched for these changes. No npm publish, push or production
+deployment is part of this acceptance. Ferment uses the staff-session mode and
+remains uncommitted.

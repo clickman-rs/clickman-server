@@ -4,8 +4,11 @@ use flate2::{Compression, write::GzEncoder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::Write;
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+mod webhook;
+pub use webhook::{WebhookConfig, WebhookSender, signature as webhook_signature};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -16,6 +19,40 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[async_trait]
 pub trait Dispatcher: Send + Sync {
     async fn deliver(&self, destination: &Destination, events: &[StoredEvent]) -> Result<()>;
+}
+
+/// Only project-scoped references are stored in integration configuration.
+/// Embedded hosts may resolve them from a vault; standalone installations use
+/// environment variables. Callers never receive another project's secrets.
+#[async_trait]
+pub trait SecretResolver: Send + Sync {
+    async fn resolve(&self, project: Uuid, reference: &str) -> Result<String>;
+}
+pub struct EnvironmentSecrets;
+#[async_trait]
+impl SecretResolver for EnvironmentSecrets {
+    async fn resolve(&self, project: Uuid, reference: &str) -> Result<String> {
+        validate_reference(project, reference)?;
+        std::env::var(reference)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error("integration credential is unavailable".into()))
+    }
+}
+pub fn validate_reference(project: Uuid, reference: &str) -> Result<()> {
+    let prefix = credential_prefix(project);
+    if reference.len() > 100
+        || !reference.starts_with(&prefix)
+        || reference.len() == prefix.len()
+        || !reference
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(Error(format!(
+            "credential reference must start with {prefix}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -45,20 +82,8 @@ impl MixpanelConfig {
         {
             return Err(Error("Mixpanel project_id must be numeric".into()));
         }
-        let prefix = credential_prefix(project);
         for key in [&config.username_env, &config.secret_env] {
-            if key.is_empty()
-                || key.len() > 100
-                || !key.starts_with(&prefix)
-                || key.len() == prefix.len()
-                || !key
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-            {
-                return Err(Error(format!(
-                    "credential environment variables must start with {prefix}"
-                )));
-            }
+            validate_reference(project, key)?;
         }
         Ok(config)
     }
@@ -72,6 +97,7 @@ pub fn credential_prefix(project: Uuid) -> String {
 #[derive(Clone)]
 pub struct Mixpanel {
     client: reqwest::Client,
+    secrets: Arc<dyn SecretResolver>,
 }
 impl Mixpanel {
     pub fn new() -> Result<Self> {
@@ -81,7 +107,12 @@ impl Mixpanel {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| Error(e.to_string()))?,
+            secrets: Arc::new(EnvironmentSecrets),
         })
+    }
+    pub fn with_secrets(mut self, secrets: Arc<dyn SecretResolver>) -> Self {
+        self.secrets = secrets;
+        self
     }
 }
 
@@ -114,10 +145,14 @@ impl Dispatcher for Mixpanel {
             return Err(Error("no dispatcher for destination kind".into()));
         }
         let config = MixpanelConfig::parse(destination.project_id, destination.config.clone())?;
-        let username = std::env::var(&config.username_env)
-            .map_err(|_| Error("Mixpanel username environment variable is missing".into()))?;
-        let secret = std::env::var(&config.secret_env)
-            .map_err(|_| Error("Mixpanel secret environment variable is missing".into()))?;
+        let username = self
+            .secrets
+            .resolve(destination.project_id, &config.username_env)
+            .await?;
+        let secret = self
+            .secrets
+            .resolve(destination.project_id, &config.secret_env)
+            .await?;
         if username.is_empty() || secret.is_empty() {
             return Err(Error("Mixpanel credentials are empty".into()));
         }

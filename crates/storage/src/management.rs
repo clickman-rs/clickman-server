@@ -1,5 +1,5 @@
 use crate::entities::project;
-use crate::{Error, ProjectSettings, Result, Role, Storage, digest, new_token, sql};
+use crate::{Error, MetadataStore, ProjectSettings, Result, Role, digest, new_token, sql};
 use chrono::{DateTime, Utc};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, EntityTrait, Set, TransactionTrait};
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,7 @@ fn label(text: &str) -> Result<()> {
     }
 }
 
-impl Storage {
+impl MetadataStore {
     pub async fn projects(&self) -> Result<Vec<Project>> {
         Ok(project::Entity::find().all(&self.db).await?)
     }
@@ -52,6 +52,19 @@ impl Storage {
             .ok_or_else(|| Error::Invalid("project not found".into()))
     }
     pub async fn create_project(&self, slug: &str, name: &str) -> Result<Project> {
+        self.create_project_in_namespace("", slug, name).await
+    }
+    /// Hosts supply an opaque scope for per-organization slug uniqueness. The
+    /// engine remains unaware of organization accounts or membership tables.
+    pub async fn create_project_in_namespace(
+        &self,
+        namespace: &str,
+        slug: &str,
+        name: &str,
+    ) -> Result<Project> {
+        if namespace.len() > 128 {
+            return Err(Error::Invalid("project namespace is too long".into()));
+        }
         label(name)?;
         if slug.is_empty()
             || slug.len() > 64
@@ -67,6 +80,7 @@ impl Storage {
         Ok(project::ActiveModel {
             id: Set(Uuid::new_v4()),
             slug: Set(slug.into()),
+            namespace: Set(namespace.into()),
             name: Set(name.into()),
             settings: Set(
                 serde_json::to_value(ProjectSettings::default()).expect("serializable settings")
@@ -174,7 +188,28 @@ impl Storage {
             .map_err(|e| Error::Invalid(e.to_string()))?;
         let tx = self.db.begin().await?;
         crate::lock_project(&tx, project).await?;
+        let changed = if let Some(previous) = tx
+            .query_one_raw(sql(
+                "SELECT definition FROM clickman_funnels WHERE project_id=$1 AND key=$2",
+                vec![project.into(), funnel.key.clone().into()],
+            ))
+            .await?
+        {
+            let old = clickman_analytics::Funnel::parse(previous.try_get("", "definition")?)
+                .map_err(|e| Error::Invalid(e.to_string()))?;
+            serde_json::to_value(old.steps).expect("funnel steps")
+                != serde_json::to_value(&funnel.steps).expect("funnel steps")
+                || old.window != funnel.window
+                || old.range != funnel.range
+        } else {
+            false
+        };
+        if tx.query_one_raw(sql("SELECT id FROM clickman_segments WHERE project_id=$1 AND definition->'rule'->>'kind'='funnel' AND definition->'rule'->>'funnel_key'=$2 AND (definition->'rule'->>'at_step')::int>$3 LIMIT 1",vec![project.into(),funnel.key.clone().into(),(funnel.steps.len() as i32).into()])).await?.is_some(){return Err(Error::Invalid("a segment references a step removed by this funnel change".into()));}
         tx.execute_raw(sql("INSERT INTO clickman_funnels(project_id,key,definition) VALUES($1,$2,$3) ON CONFLICT(project_id,key) DO UPDATE SET definition=EXCLUDED.definition",vec![project.into(),funnel.key.clone().into(),definition.into()])).await?;
+        if changed {
+            tx.execute_raw(sql("UPDATE clickman_segments SET revision=revision+1,updated_at=now(),evaluated_at=NULL WHERE project_id=$1 AND definition->'rule'->>'kind'='funnel' AND definition->'rule'->>'funnel_key'=$2",vec![project.into(),funnel.key.clone().into()])).await?;
+            tx.execute_raw(sql("UPDATE clickman_webhook_deliveries d SET status='canceled' FROM clickman_webhooks w JOIN clickman_segments s ON s.project_id=w.project_id AND s.id=w.segment_id WHERE d.project_id=$1 AND d.webhook_id=w.id AND d.status='pending' AND s.definition->'rule'->>'kind'='funnel' AND s.definition->'rule'->>'funnel_key'=$2",vec![project.into(),funnel.key.clone().into()])).await?;
+        }
         tx.execute_raw(sql(
             "DELETE FROM clickman_reports WHERE project_id=$1 AND key=$2",
             vec![project.into(), format!("funnel:{}", funnel.key).into()],
@@ -186,6 +221,7 @@ impl Storage {
     pub async fn delete_funnel(&self, project: Uuid, key: &str) -> Result<bool> {
         let tx = self.db.begin().await?;
         crate::lock_project(&tx, project).await?;
+        if tx.query_one_raw(sql("SELECT id FROM clickman_segments WHERE project_id=$1 AND definition->'rule'->>'kind'='funnel' AND definition->'rule'->>'funnel_key'=$2 LIMIT 1",vec![project.into(),key.into()])).await?.is_some(){return Err(Error::Invalid("delete the segments referencing this funnel first".into()));}
         let changed = tx
             .execute_raw(sql(
                 "DELETE FROM clickman_funnels WHERE project_id=$1 AND key=$2",

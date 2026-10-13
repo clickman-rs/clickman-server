@@ -10,7 +10,7 @@
   <Stat
     label="Daily active users"
     value={number(today?.dau ?? 0)}
-    detail="Today · identified users"
+    detail="Today · visitors and users"
   /><Stat label="Weekly active users" value={number(today?.wau ?? 0)} detail="Last 7 days" /><Stat
     label="Monthly active users"
     value={number(today?.mau ?? 0)}

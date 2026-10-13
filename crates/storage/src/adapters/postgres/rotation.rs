@@ -1,4 +1,4 @@
-use crate::{Error, ProjectSettings, Result, Storage, WriteIdentity, lock_project, sql, utc};
+use crate::{Error, ProjectSettings, Result, WriteIdentity, lock_project, sql, utc};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use clickman_analytics::{CHUNK_EVENTS, Row, decode, encode, partition};
 use clickman_protocol::Event;
@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 const ROTATION_PAGE: u64 = 20_000;
 
-impl Storage {
+impl super::PostgresContext<'_> {
     pub async fn insert(
         &self,
         identity: &WriteIdentity,
@@ -117,11 +117,12 @@ impl Storage {
             let names = dictionary(&tx, project, "clickman_event_names", "name", names).await?;
             let keys = dictionary(&tx, project, "clickman_keys", "key", keys).await?;
             let input:Vec<_>=first_days.into_iter().map(|(external_id,first_seen_on)|json!({"external_id":external_id,"first_seen_on":first_seen_on})).collect();
-            let actor_rows=tx.query_all_raw(sql("INSERT INTO clickman_actors(project_id,external_id,first_seen_on) SELECT $1,external_id,first_seen_on FROM jsonb_to_recordset($2) AS a(external_id text,first_seen_on date) ON CONFLICT(project_id,external_id) DO UPDATE SET first_seen_on=LEAST(clickman_actors.first_seen_on,EXCLUDED.first_seen_on) RETURNING id,external_id",vec![project.into(),json!(input).into()])).await?;
+            let actor_rows=tx.query_all_raw(sql("INSERT INTO clickman_actors(project_id,external_id,first_seen_on) SELECT $1,external_id,first_seen_on FROM jsonb_to_recordset($2) AS a(external_id text,first_seen_on date) ON CONFLICT(project_id,external_id) DO UPDATE SET first_seen_on=CASE WHEN clickman_actors.has_events THEN LEAST(clickman_actors.first_seen_on,EXCLUDED.first_seen_on) ELSE EXCLUDED.first_seen_on END,has_events=true RETURNING id,external_id",vec![project.into(),json!(input).into()])).await?;
             let actors: BTreeMap<String, i64> = actor_rows
                 .into_iter()
                 .map(|r| Ok((r.try_get("", "external_id")?, r.try_get("", "id")?)))
                 .collect::<std::result::Result<_, sea_orm::DbErr>>()?;
+            crate::identity::propagate_cohorts(&tx, project).await?;
             let mut groups: BTreeMap<(NaiveDate, i64), Vec<Row>> = BTreeMap::new();
             let mut bits: BTreeMap<(i64, i32), Vec<u8>> = BTreeMap::new();
             for (_, at, external, event, fields) in &parsed {
@@ -210,21 +211,28 @@ impl Storage {
         }
         let tx = self.db.begin().await?;
         lock_project(&tx, project).await?;
+        let family = crate::identity::identity_family(&tx, project, external).await?;
         let raw = tx
             .execute_raw(sql(
-                "DELETE FROM clickman_events WHERE project_id=$1 AND external_id=$2",
-                vec![project.into(), external.into()],
+                "DELETE FROM clickman_events WHERE project_id=$1 AND external_id IN (SELECT value FROM jsonb_array_elements_text($2))",
+                vec![project.into(), json!(family).into()],
             ))
             .await?
             .rows_affected();
-        let actor = tx
-            .query_one_raw(sql(
-                "SELECT id FROM clickman_actors WHERE project_id=$1 AND external_id=$2",
-                vec![project.into(), external.into()],
+        let actors = tx
+            .query_all_raw(sql(
+                "SELECT id FROM clickman_actors WHERE project_id=$1 AND external_id IN (SELECT value FROM jsonb_array_elements_text($2)) ORDER BY id",
+                vec![project.into(), json!(family).into()],
             ))
             .await?;
-        if let Some(ref actor) = actor {
+        let has_actors = !actors.is_empty();
+        for actor in actors {
             let actor: i64 = actor.try_get("", "id")?;
+            tx.execute_raw(sql(
+                "DELETE FROM clickman_segment_members WHERE project_id=$1 AND actor_id=$2",
+                vec![project.into(), actor.into()],
+            ))
+            .await?;
             let activity=tx.query_all_raw(sql("SELECT year,days::text AS days FROM clickman_actor_days WHERE project_id=$1 AND actor_id=$2",vec![project.into(),actor.into()])).await?;
             for a in activity {
                 let year: i32 = a.try_get("", "year")?;
@@ -263,7 +271,7 @@ impl Storage {
                 vec![project.into(), actor.into()],
             ))
             .await?;
-            tx.execute_raw(sql("UPDATE clickman_actors SET external_id=NULL,erased_at=$3 WHERE project_id=$1 AND id=$2",vec![project.into(),actor.into(),now.into()])).await?;
+            tx.execute_raw(sql("UPDATE clickman_actors SET external_id=NULL,erased_at=$3,merged_into_id=NULL WHERE project_id=$1 AND id=$2",vec![project.into(),actor.into(),now.into()])).await?;
         }
         tx.execute_raw(sql(
             "DELETE FROM clickman_reports WHERE project_id=$1",
@@ -271,7 +279,7 @@ impl Storage {
         ))
         .await?;
         tx.commit().await?;
-        Ok(raw > 0 || actor.is_some())
+        Ok(raw > 0 || has_actors)
     }
 }
 

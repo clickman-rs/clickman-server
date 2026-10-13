@@ -1,6 +1,51 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 const root = process.env.CLICKMAN_TEST_ADMIN_TOKEN ?? 'clickman-ui-test-root-token-32-bytes-long';
 
+test('segments preserve paused state when edited and accept a scoped Zapier webhook', async ({
+  page,
+  request,
+}) => {
+  const id = await project(request, 'Segment browser contract');
+  await page.goto(`projects/${id}/segments`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page.getByRole('button', { name: '+ New segment', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Checkout interest');
+  await page.getByLabel('Key', { exact: true }).fill('interest');
+  await page.getByLabel('Event', { exact: true }).fill('checkout_started');
+  await page.getByRole('button', { name: 'Save segment', exact: true }).click();
+  const row = page.getByRole('row', { name: /Checkout interest/ });
+  await expect(row).toContainText('Active');
+  await row.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect(row).toContainText('Paused');
+  await row.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Checkout interest renamed');
+  await page.getByRole('button', { name: 'Save segment', exact: true }).click();
+  await expect(page.getByRole('row', { name: /Checkout interest renamed/ })).toContainText(
+    'Paused',
+  );
+  await page
+    .getByRole('combobox', { name: 'Segment', exact: true })
+    .selectOption({ label: 'Checkout interest renamed' });
+  await page.getByLabel('Webhook name').fill('Browser Zapier');
+  await page.getByRole('combobox', { name: 'Receiver', exact: true }).selectOption('zapier');
+  await page
+    .getByLabel('Endpoint URL')
+    .fill('https://hooks.zapier.com/hooks/catch/fixture/fixture/');
+  await page
+    .getByLabel('Signing secret environment reference')
+    .fill(`CLICKMAN_${id.replaceAll('-', '').toUpperCase()}_SIGNING`);
+  await page.getByRole('button', { name: 'Add webhook', exact: true }).click();
+  await expect(page.getByText('Browser Zapier · zapier · Active', { exact: true })).toBeVisible();
+  const result = await rootGraphql(
+    request,
+    'query($id:UUID!){project(id:$id){segments{enabled name} webhooks{kind config}}}',
+    { id },
+  );
+  expect(result.project.segments[0].enabled).toBe(false);
+  expect(result.project.webhooks[0].kind).toBe('zapier');
+});
+
 async function rootGraphql(request: APIRequestContext, query: string, variables = {}) {
   const response = await request.post('graphql', {
     headers: { authorization: `Bearer ${root}` },

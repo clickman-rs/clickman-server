@@ -16,7 +16,8 @@
   } from './graphql/generated';
   import { dataOrThrow, errorMessage } from './graphql/errors';
   import { pollVisible } from './graphql/poll.svelte';
-  import type { ClickmanRoute } from './types';
+  import type { ClickmanRoute, ClickmanWorkspaceProps } from './types';
+  import SegmentsScreen from './segments/SegmentsScreen.svelte';
   import type { ActiveDay, Cohort, EventTotal, FunnelReport, Settings } from './reports';
   import ProjectPicker from './projects/ProjectPicker.svelte';
   import OverviewScreen from './overview/OverviewScreen.svelte';
@@ -27,8 +28,11 @@
   let {
     route,
     onnavigate,
-  }: { route: ClickmanRoute; onnavigate: (route: ClickmanRoute) => void | Promise<void> } =
-    $props();
+    createWebhook,
+    createDestination,
+    allowAccessKeys,
+    maxRetentionDays,
+  }: Omit<ClickmanWorkspaceProps, 'client'> = $props();
   const projectsQuery = createQuery<ProjectsQuery>({ query: ProjectsDocument });
   // Permissions can arrive while a slow project list is still loading.
   const accessQuery = createQuery<DashboardAccessQuery>({ query: DashboardAccessDocument });
@@ -48,7 +52,7 @@
   const project = $derived(
     analytics.data?.project.id === route.projectId ? analytics.data.project : undefined,
   );
-  const current = $derived(projects.find((item) => item.id === route.projectId) ?? project);
+  const current = $derived(project ?? projects.find((item) => item.id === route.projectId));
   const reports = $derived(project?.reports ?? []);
   const days = $derived(
     (
@@ -171,7 +175,7 @@
     aria-label="Analytics sections"
     class="cm:mb-7 cm:mt-7 cm:flex cm:flex-wrap cm:gap-7 cm:border-b cm:border-line"
   >
-    {#each ['overview', 'retention', 'funnels', ...(current?.canAdmin ? ['settings'] : [])] as section}
+    {#each ['overview', 'retention', 'funnels', 'segments', ...(current?.canAdmin ? ['settings'] : [])] as section}
       <button
         type="button"
         class="cm-tab cm:capitalize"
@@ -200,11 +204,20 @@
           reports={funnels}
           onchanged={reloadAnalytics}
         />{/key}
+    {:else if route.section === 'segments'}{#key route.projectId}<SegmentsScreen
+          projectId={route.projectId}
+          canAdmin={current?.canAdmin ?? false}
+          funnels={project.funnels}
+          {createWebhook}
+        />{/key}
     {:else if route.section === 'settings'}
       {#if current?.canAdmin}{#key route.projectId}<SettingsScreen
             projectId={route.projectId}
             settings={project.settings as Settings}
             onchanged={reloadAnalytics}
+            {createDestination}
+            {allowAccessKeys}
+            {maxRetentionDays}
           />{/key}
       {:else}<div class="cm-surface cm:p-6">
           <h2>Project administrator access required.</h2>

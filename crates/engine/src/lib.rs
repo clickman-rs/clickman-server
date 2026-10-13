@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 pub use auth::{Authenticator, StandaloneAuthenticator};
 pub use clickman_storage::{Access, Role};
-pub use http::HTTP_ROUTES;
+pub use http::{HTTP_ROUTES, request_ip};
 pub use track::TrackingEvent;
 
 #[derive(Clone)]
@@ -57,7 +57,11 @@ impl Engine {
         self
     }
     pub fn with_dispatcher(mut self, dispatcher: Arc<dyn Dispatcher>) -> Self {
-        self.jobs = Jobs::new(self.storage.clone(), dispatcher);
+        self.jobs = self.jobs.with_dispatcher(dispatcher);
+        self
+    }
+    pub fn with_webhook_sender(mut self, sender: clickman_destinations::WebhookSender) -> Self {
+        self.jobs = self.jobs.with_webhook_sender(sender);
         self
     }
     /// Enable only when a trusted reverse proxy overwrites X-Forwarded-For.
@@ -81,7 +85,7 @@ impl Engine {
         let dir = web_dir.as_ref();
         self.router().fallback_service(
             tower_http::services::ServeDir::new(dir)
-                .not_found_service(tower_http::services::ServeFile::new(dir.join("index.html"))),
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html"))),
         )
     }
 }

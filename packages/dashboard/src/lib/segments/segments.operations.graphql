@@ -1,0 +1,83 @@
+query Segments($id: UUID!) {
+  project(id: $id) {
+    id
+    segments {
+      id
+      key
+      name
+      definition
+      enabled
+      fireExisting
+      revision
+      members
+      evaluatedAt
+    }
+  }
+}
+query Webhooks($id: UUID!) {
+  project(id: $id) {
+    id
+    webhooks {
+      id
+      segmentId
+      name
+      kind
+      config
+      enabled
+    }
+    webhookLogs {
+      id
+      webhookId
+      entryId
+      status
+      attempts
+      lastStatus
+      lastError
+      nextAttemptAt
+      completedAt
+      createdAt
+    }
+  }
+}
+mutation SaveSegment(
+  $projectId: UUID!
+  $definition: JSON!
+  $enabled: Boolean!
+  $fireExisting: Boolean!
+) {
+  saveSegment(
+    projectId: $projectId
+    definition: $definition
+    enabled: $enabled
+    fireExisting: $fireExisting
+  ) {
+    id
+    key
+    name
+    definition
+    enabled
+    fireExisting
+    revision
+    members
+    evaluatedAt
+  }
+}
+mutation DeleteSegment($projectId: UUID!, $id: UUID!) {
+  deleteSegment(projectId: $projectId, id: $id)
+}
+mutation SaveWebhook($projectId: UUID!, $input: WebhookInput!) {
+  saveWebhook(projectId: $projectId, input: $input) {
+    id
+    segmentId
+    name
+    kind
+    config
+    enabled
+  }
+}
+mutation DeleteWebhook($projectId: UUID!, $id: UUID!) {
+  deleteWebhook(projectId: $projectId, id: $id)
+}
+mutation ReplayWebhook($projectId: UUID!, $id: UUID!) {
+  replayWebhook(projectId: $projectId, id: $id)
+}

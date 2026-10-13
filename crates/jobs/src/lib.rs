@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use clickman_destinations::Dispatcher;
+use clickman_destinations::{Dispatcher, WebhookSender};
 use clickman_storage::{Result, Storage};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -8,6 +8,7 @@ use uuid::Uuid;
 pub struct Jobs {
     storage: Storage,
     dispatcher: Arc<dyn Dispatcher>,
+    webhooks: WebhookSender,
 }
 
 impl Jobs {
@@ -15,12 +16,54 @@ impl Jobs {
         Self {
             storage,
             dispatcher,
+            webhooks: WebhookSender::default(),
         }
+    }
+    pub fn with_dispatcher(mut self, dispatcher: Arc<dyn Dispatcher>) -> Self {
+        self.dispatcher = dispatcher;
+        self
+    }
+    pub fn with_webhook_sender(mut self, sender: WebhookSender) -> Self {
+        self.webhooks = sender;
+        self
+    }
+    pub async fn deliver_webhooks(&self, project: Uuid, now: DateTime<Utc>) -> Result<u64> {
+        let mut count = 0;
+        for _ in 0..20 {
+            let Some(delivery) = self.storage.webhook_delivery(project, now).await? else {
+                break;
+            };
+            match self
+                .webhooks
+                .deliver(&delivery.webhook, &delivery.payload)
+                .await
+            {
+                Ok(status) if (200..300).contains(&status) => {
+                    delivery.complete(status, Utc::now()).await?;
+                    count += 1;
+                }
+                Ok(status) => {
+                    delivery
+                        .retry(
+                            Some(status),
+                            "receiver returned an unsuccessful HTTP status",
+                            Utc::now(),
+                        )
+                        .await?;
+                }
+                Err(error) => {
+                    tracing::warn!(%project,webhook_id=%delivery.webhook.id,%error,"webhook will be retried");
+                    delivery.retry(None, &error.to_string(), Utc::now()).await?;
+                }
+            }
+        }
+        Ok(count)
     }
     pub async fn rotate(&self, project: Uuid, now: DateTime<Utc>) -> Result<u64> {
         let count = self.storage.rotate(project, now).await?;
         self.storage.prune(project, now).await?;
         self.storage.refresh_reports(project, now).await?;
+        self.storage.evaluate_segments(project, now).await?;
         Ok(count)
     }
     pub async fn deliver(&self, project: Uuid, now: DateTime<Utc>) -> Result<u64> {
@@ -68,6 +111,9 @@ impl Jobs {
             }
             if let Err(error) = self.deliver(project.id, now).await {
                 tracing::error!(project=%project.id,%error,"delivery failed");
+            }
+            if let Err(error) = self.deliver_webhooks(project.id, now).await {
+                tracing::error!(project=%project.id,%error,"webhook delivery failed");
             }
         }
         Ok(())

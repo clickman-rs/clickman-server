@@ -9,3 +9,7 @@ sea-orm-migration.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+uuid.workspace = true

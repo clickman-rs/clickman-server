@@ -7,6 +7,8 @@ pub mod project {
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
         pub slug: String,
+        #[serde(skip)]
+        pub namespace: String,
         pub name: String,
         pub settings: Json,
         pub created_at: DateTimeUtc,

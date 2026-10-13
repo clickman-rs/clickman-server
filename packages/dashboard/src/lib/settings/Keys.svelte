@@ -24,8 +24,13 @@
     projectId,
     data,
     onrefresh,
-  }: { projectId: string; data: ProjectAdminQuery['project']; onrefresh: () => Promise<void> } =
-    $props();
+    allowAccessKeys = true,
+  }: {
+    projectId: string;
+    data: ProjectAdminQuery['project'];
+    onrefresh: () => Promise<void>;
+    allowAccessKeys?: boolean;
+  } = $props();
   const action = createAction();
   const issueWrite = createMutation<IssueWriteKeyMutation, IssueWriteKeyMutationVariables>({
     query: IssueWriteKeyDocument,
@@ -109,37 +114,37 @@
         >
       </table>{/if}
   </section>
-  <section class="cm-surface cm:p-6">
-    <h2>Project access</h2>
-    <p class="cm:mt-1 cm:text-sm cm:text-muted">
-      Reader keys can view reports. Admin keys can manage this project.
-    </p>
-    <form
-      onsubmit={createAccess}
-      class="cm:my-5 cm:grid cm:items-end cm:gap-3 cm:sm:grid-cols-[1fr_10rem_auto]"
-    >
-      <label>Key name<input bind:value={accessName} placeholder="Product team" required /></label
-      ><label
-        >Role<select bind:value={role}
-          ><option value="READER">Reader</option><option value="ADMIN">Admin</option></select
-        ></label
-      ><Button type="submit" disabled={action.busy}>Create access key</Button>
-    </form>
-    {#if data.accessKeys.length}<table>
-        <thead><tr><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody
-          >{#each data.accessKeys as key}<tr
-              ><td class="cm:font-medium">{key.name}</td><td class="cm:text-muted"
-                >{key.role.toLowerCase()}</td
-              ><td class="cm:text-muted">{key.revokedAt ? 'Revoked' : 'Active'}</td><td
-                class="cm:text-right"
-                >{#if !key.revokedAt}<Button
-                    variant="ghost"
-                    disabled={action.busy}
-                    onclick={() => revoke('access', key.id)}>Revoke</Button
-                  >{/if}</td
-              ></tr
-            >{/each}</tbody
-        >
-      </table>{/if}
-  </section>
+  {#if allowAccessKeys}<section class="cm-surface cm:p-6">
+      <h2>Project access</h2>
+      <p class="cm:mt-1 cm:text-sm cm:text-muted">
+        Reader keys can view reports. Admin keys can manage this project.
+      </p>
+      <form
+        onsubmit={createAccess}
+        class="cm:my-5 cm:grid cm:items-end cm:gap-3 cm:sm:grid-cols-[1fr_10rem_auto]"
+      >
+        <label>Key name<input bind:value={accessName} placeholder="Product team" required /></label
+        ><label
+          >Role<select bind:value={role}
+            ><option value="READER">Reader</option><option value="ADMIN">Admin</option></select
+          ></label
+        ><Button type="submit" disabled={action.busy}>Create access key</Button>
+      </form>
+      {#if data.accessKeys.length}<table>
+          <thead><tr><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody
+            >{#each data.accessKeys as key}<tr
+                ><td class="cm:font-medium">{key.name}</td><td class="cm:text-muted"
+                  >{key.role.toLowerCase()}</td
+                ><td class="cm:text-muted">{key.revokedAt ? 'Revoked' : 'Active'}</td><td
+                  class="cm:text-right"
+                  >{#if !key.revokedAt}<Button
+                      variant="ghost"
+                      disabled={action.busy}
+                      onclick={() => revoke('access', key.id)}>Revoke</Button
+                    >{/if}</td
+                ></tr
+              >{/each}</tbody
+          >
+        </table>{/if}
+    </section>{/if}
 </fieldset>

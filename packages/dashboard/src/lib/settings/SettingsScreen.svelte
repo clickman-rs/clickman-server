@@ -7,6 +7,7 @@
   } from '../graphql/generated';
   import { errorMessage } from '../graphql/errors';
   import type { Settings } from '../reports';
+  import type { DestinationCreator } from '../types';
   import Keys from './Keys.svelte';
   import Processing from './Processing.svelte';
   import Destinations from './Destinations.svelte';
@@ -15,7 +16,17 @@
     projectId,
     settings,
     onchanged,
-  }: { projectId: string; settings: Settings; onchanged: () => Promise<void> } = $props();
+    createDestination,
+    allowAccessKeys,
+    maxRetentionDays,
+  }: {
+    projectId: string;
+    settings: Settings;
+    onchanged: () => Promise<void>;
+    createDestination?: DestinationCreator;
+    allowAccessKeys?: boolean;
+    maxRetentionDays?: number;
+  } = $props();
   const query = createQuery<ProjectAdminQuery, ProjectAdminQueryVariables>({
     query: ProjectAdminDocument,
     variables: () => ({ id: projectId }),
@@ -30,9 +41,14 @@
 <div class="cm:grid cm:gap-6">
   {#if query.error}<p role="alert" class="cm-error">{errorMessage(query.error)}</p>{/if}
   {#if data}
-    <Keys {projectId} {data} onrefresh={refresh} />
-    <Processing {projectId} {settings} {onchanged} />
-    <Destinations {projectId} destinations={data.destinations} onrefresh={refresh} />
+    <Keys {projectId} {data} onrefresh={refresh} {allowAccessKeys} />
+    <Processing {projectId} {settings} {onchanged} {maxRetentionDays} />
+    <Destinations
+      {projectId}
+      destinations={data.destinations}
+      onrefresh={refresh}
+      {createDestination}
+    />
     <Erasure {projectId} {onchanged} />
   {:else if !query.error}<p role="status" class="cm-empty">Loading project settings…</p>{/if}
 </div>

@@ -4,6 +4,7 @@
   import { Button } from '../ui/index';
   import { createAction } from '../ui/action.svelte';
   import { dataOrThrow } from '../graphql/errors';
+  import type { DestinationCreator } from '../types';
   import {
     SaveDestinationDocument,
     DeleteDestinationDocument,
@@ -17,10 +18,12 @@
     projectId,
     destinations,
     onrefresh,
+    createDestination,
   }: {
     projectId: string;
     destinations: ProjectAdminQuery['project']['destinations'];
     onrefresh: () => Promise<void>;
+    createDestination?: DestinationCreator;
   } = $props();
   const action = createAction();
   const saveDestination = createMutation<SaveDestinationMutation, SaveDestinationMutationVariables>(
@@ -37,24 +40,38 @@
   let mixpanelId = $state('');
   let usernameEnv = $state(`${credentialPrefix}MIXPANEL_USERNAME`);
   let secretEnv = $state(`${credentialPrefix}MIXPANEL_SECRET`);
+  let username = $state('');
+  let secret = $state('');
   let region = $state('us');
   let saved = $state('');
   function addDestination(event: SubmitEvent) {
     event.preventDefault();
     saved = '';
     void action.run(async () => {
-      dataOrThrow(
-        await saveDestination.execute({
+      if (createDestination) {
+        await createDestination({
           projectId,
           name: destinationName,
-          config: {
-            project_id: mixpanelId,
-            username_env: usernameEnv,
-            secret_env: secretEnv,
-            region,
-          },
-        }),
-      );
+          mixpanelProjectId: mixpanelId,
+          username,
+          secret,
+          region,
+        });
+        username = '';
+        secret = '';
+      } else
+        dataOrThrow(
+          await saveDestination.execute({
+            projectId,
+            name: destinationName,
+            config: {
+              project_id: mixpanelId,
+              username_env: usernameEnv,
+              secret_env: secretEnv,
+              region,
+            },
+          }),
+        );
       await onrefresh();
       saved = 'Destination saved.';
     });
@@ -76,7 +93,9 @@
   <section class="cm-surface cm:p-6">
     <h2>Destinations</h2>
     <p class="cm:mt-1 cm:text-sm cm:text-muted">
-      Forward sanitized events to Mixpanel. Credentials are read from the server environment.
+      Forward sanitized events to Mixpanel. {createDestination
+        ? 'Credentials are stored encrypted for this project.'
+        : 'Credentials are read from the server environment.'}
     </p>
     {#each destinations as destination}<div
         class="cm:mt-4 cm:flex cm:items-center cm:justify-between cm:rounded-lg cm:bg-canvas cm:p-4"
@@ -103,9 +122,22 @@
             >India</option
           ></select
         ></label
-      ><label>Username environment variable<input bind:value={usernameEnv} required /></label><label
-        >Secret environment variable<input bind:value={secretEnv} required /></label
-      >
+      >{#if createDestination}<label
+          >Service account username<input
+            bind:value={username}
+            required
+            autocomplete="off"
+          /></label
+        ><label
+          >Service account secret<input
+            type="password"
+            bind:value={secret}
+            required
+            autocomplete="new-password"
+          /></label
+        >{:else}<label
+          >Username environment variable<input bind:value={usernameEnv} required /></label
+        ><label>Secret environment variable<input bind:value={secretEnv} required /></label>{/if}
       <div class="cm:flex cm:items-end">
         <Button type="submit" disabled={action.busy}>Save destination</Button>
       </div>

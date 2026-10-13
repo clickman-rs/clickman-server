@@ -18,6 +18,7 @@ async-trait.workspace = true
 chrono.workspace = true
 flate2.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 time.workspace = true
@@ -30,6 +31,7 @@ uuid.workspace = true
 workspace = true
 
 [dev-dependencies]
+clickhouse.workspace = true
 sea-orm.workspace = true
 tower.workspace = true
 clickman-analytics.workspace = true

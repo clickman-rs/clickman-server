@@ -5,4 +5,6 @@ export {
   type ClickmanSection,
   type ClickmanRoute,
   type ClickmanWorkspaceProps,
+  type WebhookCreator,
+  type DestinationCreator,
 } from './types';

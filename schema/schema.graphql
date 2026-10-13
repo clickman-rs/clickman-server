@@ -37,6 +37,11 @@ A scalar that can represent any JSON value.
 scalar JSON
 
 type Mutation {
+	saveSegment(projectId: UUID!, definition: JSON!, enabled: Boolean! = true, fireExisting: Boolean! = false): Segment!
+	deleteSegment(projectId: UUID!, id: UUID!): Boolean!
+	saveWebhook(projectId: UUID!, input: WebhookInput!): Webhook!
+	deleteWebhook(projectId: UUID!, id: UUID!): Boolean!
+	replayWebhook(projectId: UUID!, id: UUID!): Boolean!
 	createProject(slug: String!, name: String!): Project!
 	updateSettings(projectId: UUID!, settings: JSON!): Project!
 	issueWriteKey(projectId: UUID!, source: String!): IssuedKey!
@@ -79,6 +84,9 @@ type Project {
 	name: String!
 	settings: JSON!
 	createdAt: DateTime!
+	segments: [Segment!]!
+	webhooks: [Webhook!]!
+	webhookLogs(limit: Int! = 50): [WebhookLog!]!
 	canAdmin: Boolean!
 	reports: [Report!]!
 	funnels: [Funnel!]!
@@ -134,6 +142,18 @@ type Report {
 	computedAt: DateTime!
 }
 
+type Segment {
+	id: ID!
+	key: String!
+	name: String!
+	definition: JSON!
+	enabled: Boolean!
+	fireExisting: Boolean!
+	revision: Int!
+	members: Int!
+	evaluatedAt: DateTime
+}
+
 """
 A UUID is a unique 128-bit number, stored as 16 octets. UUIDs are parsed as
 Strings within GraphQL. UUIDs are used to assign unique identifiers to
@@ -148,6 +168,36 @@ scalar UUID
 
 type Viewer {
 	canCreateProjects: Boolean!
+}
+
+type Webhook {
+	id: ID!
+	segmentId: ID!
+	name: String!
+	kind: String!
+	config: JSON!
+	enabled: Boolean!
+}
+
+input WebhookInput {
+	segmentId: UUID!
+	name: String!
+	kind: String!
+	config: JSON!
+	enabled: Boolean! = true
+}
+
+type WebhookLog {
+	id: ID!
+	webhookId: ID!
+	entryId: ID!
+	status: String!
+	attempts: Int!
+	lastStatus: Int
+	lastError: String
+	nextAttemptAt: DateTime!
+	completedAt: DateTime
+	createdAt: DateTime!
 }
 
 type WriteKey {

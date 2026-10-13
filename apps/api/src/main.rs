@@ -26,7 +26,9 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "10".into())
         .parse()
         .context("invalid CLICKMAN_DATABASE_POOL")?;
-    let storage = Storage::connect(&url, pool).await?;
+    let storage = Storage::connect(&url, pool)
+        .await?
+        .with_analytics_adapter(clickman_storage::adapters::from_environment()?);
     storage.migrate().await?;
     if command == "migrate" {
         return Ok(());

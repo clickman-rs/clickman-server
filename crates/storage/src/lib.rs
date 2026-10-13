@@ -1,10 +1,17 @@
+pub mod adapters;
 mod config;
 mod connection;
 mod delivery;
 pub mod entities;
+mod identity;
+mod observations;
+mod segments;
+mod webhooks;
+pub use observations::ObservationQuery;
+pub use segments::SavedSegment;
+pub use webhooks::{Webhook, WebhookDelivery, WebhookLog};
 mod management;
 mod reports;
-mod rotation;
 
 use chrono::{DateTime, Utc};
 use sea_orm::{
@@ -16,7 +23,9 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use uuid::Uuid;
 
+pub use adapters::{AnalyticsAdapter, PostgresAdapter};
 use connection::Connection;
+use std::ops::Deref;
 
 pub use config::{Access, ProjectSettings, RateLimit, Role};
 pub use delivery::{DeliveryPage, Destination, StoredEvent};
@@ -31,15 +40,26 @@ pub enum Error {
     Codec(#[from] clickman_analytics::CodecError),
     #[error("{0}")]
     Invalid(String),
+    #[error("ingestion capacity exhausted")]
+    Capacity { retry_after_seconds: u64 },
+    #[error("analytics {operation} failed: {source}")]
+    Backend {
+        operation: &'static str,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone)]
-pub struct Storage {
+pub struct MetadataStore {
     db: Connection,
 }
 
-impl Storage {
+impl MetadataStore {
+    pub fn transaction_scoped(&self) -> bool {
+        matches!(self.db, Connection::Transaction(_))
+    }
     pub async fn connect(url: &str, pool_size: u32) -> Result<Self> {
         if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
             return Err(Error::Invalid("Clickman requires PostgreSQL".into()));
@@ -104,6 +124,100 @@ impl Storage {
                 "transaction-scoped storage cannot close the caller's transaction; commit or roll back the transaction owner".into(),
             )),
         }
+    }
+}
+
+/// Public engine store: transactional metadata plus an interchangeable analytics backend.
+#[derive(Clone)]
+pub struct Storage {
+    metadata: MetadataStore,
+    adapter: Arc<dyn AnalyticsAdapter>,
+}
+
+impl Deref for Storage {
+    type Target = MetadataStore;
+    fn deref(&self) -> &Self::Target {
+        &self.metadata
+    }
+}
+
+impl Storage {
+    pub fn from_metadata(metadata: MetadataStore) -> Self {
+        Self {
+            metadata,
+            adapter: Arc::new(PostgresAdapter),
+        }
+    }
+    pub async fn connect(url: &str, pool_size: u32) -> Result<Self> {
+        Ok(Self::from_metadata(
+            MetadataStore::connect(url, pool_size).await?,
+        ))
+    }
+    pub fn from_connection(db: DatabaseConnection) -> Result<Self> {
+        Ok(Self::from_metadata(MetadataStore::from_connection(db)?))
+    }
+    pub fn from_transaction(tx: Arc<DatabaseTransaction>) -> Result<Self> {
+        Ok(Self::from_metadata(MetadataStore::from_transaction(tx)?))
+    }
+    pub fn in_transaction(&self, tx: Arc<DatabaseTransaction>) -> Result<Self> {
+        Ok(Self {
+            metadata: MetadataStore::from_transaction(tx)?,
+            adapter: self.adapter.clone(),
+        })
+    }
+    pub fn with_analytics_adapter(mut self, adapter: Arc<dyn AnalyticsAdapter>) -> Self {
+        self.adapter = adapter;
+        self
+    }
+    pub fn backend_name(&self) -> &'static str {
+        self.adapter.name()
+    }
+    pub async fn migrate(&self) -> Result<()> {
+        self.metadata.migrate().await?;
+        self.adapter.migrate(&self.metadata).await
+    }
+    pub async fn healthy(&self) -> bool {
+        self.metadata.healthy().await && self.adapter.healthy(&self.metadata).await.is_ok()
+    }
+    pub async fn close(self) -> Result<()> {
+        self.metadata.close().await
+    }
+    pub async fn insert(
+        &self,
+        identity: &WriteIdentity,
+        events: &[clickman_protocol::Event],
+        received_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        self.adapter
+            .insert(&self.metadata, identity, events, received_at)
+            .await
+    }
+    pub async fn insert_server(
+        &self,
+        project: Uuid,
+        source: &str,
+        events: &[clickman_protocol::Event],
+        received_at: DateTime<Utc>,
+    ) -> Result<u64> {
+        self.adapter
+            .insert_server(&self.metadata, project, source, events, received_at)
+            .await
+    }
+    pub async fn rotate(&self, project: Uuid, now: DateTime<Utc>) -> Result<u64> {
+        self.adapter.rotate(&self.metadata, project, now).await
+    }
+    pub async fn prune(&self, project: Uuid, now: DateTime<Utc>) -> Result<u64> {
+        self.adapter.prune(&self.metadata, project, now).await
+    }
+    pub async fn erase(&self, project: Uuid, external: &str, now: DateTime<Utc>) -> Result<bool> {
+        self.adapter
+            .erase(&self.metadata, project, external, now)
+            .await
+    }
+    pub async fn refresh_reports(&self, project: Uuid, now: DateTime<Utc>) -> Result<()> {
+        self.adapter
+            .refresh_reports(&self.metadata, project, now)
+            .await
     }
 }
 

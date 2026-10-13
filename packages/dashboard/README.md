@@ -1,8 +1,8 @@
 # Clickman dashboard for Svelte
 
 One analytics workspace for the standalone Clickman application and Svelte hosts.
-Includes projects, activity, events, retention, funnels, source/access keys,
-processing settings, destinations and privacy erasure. Server authorization
+Includes projects, activity, events, retention, funnels, segments, signed webhooks,
+source/access keys, processing settings, destinations and privacy erasure. Server authorization
 controls the available operations.
 
 ## Install and render
@@ -16,7 +16,7 @@ Build/pack it using the commands below, copy it into the host repository, then
 install it by relative path:
 
 ```sh
-pnpm add ./vendor/clickman-dashboard-0.1.0.tgz
+pnpm add ./vendor/clickman-dashboard-0.2.1.tgz
 ```
 
 ```svelte
@@ -41,7 +41,7 @@ pnpm add ./vendor/clickman-dashboard-0.1.0.tgz
 This example keeps navigation in component state. A routed host derives `route`
 from its URL and implements `onnavigate` with its router. `projectId` is a
 canonical UUID or `null`; a null selection opens the first accessible project.
-Sections are `overview`, `retention`, `funnels` and `settings`, exported as
+Sections are `overview`, `retention`, `funnels`, `segments` and `settings`, exported as
 `clickmanSections`. Creating a project navigates to its overview after refreshing
 the project list. Reader access never renders management forms.
 
@@ -54,8 +54,9 @@ different client remounts the observers; the workspace never disposes a supplied
 client. Abort the host's in-flight requests before disposing its client.
 
 Render this workspace in the browser. In a SvelteKit SPA, set `ssr = false` in
-the enclosing layout. The package does not import `$app`, manage login, store
-credentials, create a client, or impose a URL structure.
+the enclosing layout. The workspace does not import `$app`, manage login, store
+credentials, or impose a URL structure. A separate optional client entry creates
+the same Cachebay transport used by the standalone application.
 
 The standalone host sends Bearer-authenticated requests to `/graphql`; an
 embedded host can use its session endpoint, such as Ferment's
@@ -63,6 +64,39 @@ embedded host can use its session endpoint, such as Ferment's
 errors preserved, including errors accompanying partial data. Do not put access
 tokens into URLs. The existing Clickman GraphQL schema is required; no REST or
 SDK ingestion adapter is needed for the workspace.
+
+## Headless client and host policy
+
+`@clickman/dashboard/client` has no Svelte dependency in its runtime imports.
+It exports generated typed GraphQL documents and the same project-scoped API
+used by the Cloud browser agent:
+
+```ts
+import { createClickmanClient, createClickmanApi } from '@clickman/dashboard/client';
+
+const lifetime = new AbortController();
+const client = createClickmanClient({
+  endpoint: '/api/organizations/42/graphql',
+  credentials: 'same-origin',
+  lifetime: lifetime.signal,
+});
+const analytics = createClickmanApi(client, projectId, lifetime.signal);
+const project = await analytics.project();
+// On user, organization, grant or project change:
+lifetime.abort();
+client.dispose();
+```
+
+The transport preserves GraphQL errors, uses a 30-second request deadline and
+supports either a host session or a supplied Bearer token. The headless API
+checks the returned project identity; all writes still require server access.
+
+Hosts can pass `allowAccessKeys={false}` and `maxRetentionDays={30}` to the
+workspace, with matching server `ProjectPolicy`. Optional `createWebhook` and
+`createDestination` callbacks let a SaaS host encrypt submitted credentials and
+save their project-scoped references atomically. Standalone mode instead uses
+operator environment references. The browser agent is part of the SaaS host,
+not a dependency of the shared workspace.
 
 ## Styles
 
@@ -83,7 +117,8 @@ Customize inherited variables on an enclosing element:
 ```
 
 `ClickmanButton` is also exported for a host's login/header inside a `.clickman`
-wrapper. Internal screen components and GraphQL documents are not public exports.
+wrapper. Internal screen components are private. Typed GraphQL documents are
+exported from `@clickman/dashboard/client`.
 
 ## Development and release
 
