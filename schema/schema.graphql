@@ -88,7 +88,7 @@ type Project {
 	webhooks: [Webhook!]!
 	webhookLogs(limit: Int! = 50): [WebhookLog!]!
 	canAdmin: Boolean!
-	reports: [Report!]!
+	reports(keys: [String!]): [Report!]!
 	funnels: [Funnel!]!
 	writeKeys: [WriteKey!]!
 	accessKeys: [AccessKey!]!

@@ -83,7 +83,7 @@
 }
 .clickman :where(th) {
   border-bottom: 1px solid var(--cm-color-line);
-  padding: 0.75rem 0;
+  padding: 0.75rem 1rem;
   font-weight: 500;
   color: var(--cm-color-muted);
   white-space: nowrap;
@@ -91,7 +91,7 @@
 }
 .clickman :where(td) {
   border-bottom: 1px solid var(--cm-color-line);
-  padding: 0.875rem 0;
+  padding: 0.875rem 1rem;
 }
 .clickman :where(tr:last-child td) {
   border-bottom: 0;

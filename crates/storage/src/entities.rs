@@ -1,3 +1,9 @@
+pub mod access_key;
+pub mod destination;
+pub mod funnel;
+pub mod report;
+pub mod write_key;
+
 pub mod project {
     use sea_orm::entity::prelude::*;
     use serde::{Deserialize, Serialize};

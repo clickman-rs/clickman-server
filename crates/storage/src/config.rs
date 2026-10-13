@@ -153,6 +153,11 @@ impl Access {
     pub fn is_root(&self) -> bool {
         self.root
     }
+    /// Explicit project grants for pushing authorization into metadata queries.
+    /// Instance root has no explicit grants; check is_root before filtering.
+    pub fn project_ids(&self) -> impl Iterator<Item = Uuid> + '_ {
+        self.projects.keys().copied()
+    }
     pub fn can_read(&self, project: Uuid) -> bool {
         self.root || self.projects.contains_key(&project)
     }

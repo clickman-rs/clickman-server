@@ -53,6 +53,12 @@ the staff schema, but Bearer requests to the raw route return 401. To serve the
 standalone token-login application from a host, configure its authenticator as
 shown above; mounting the router alone does not enable that workflow.
 
+The [stdio MCP bridge](MCP.md) can also use an existing authorized host GraphQL
+endpoint. Configure its member cookie and exact public Origin; it preserves the
+host's scope and transaction policy on every operation. It neither installs an
+authenticator on the raw engine route nor creates project-key access for a
+session-only host.
+
 ## Jobs and host transactions
 
 Schedule `engine.jobs().tick()` with the host's scheduler, or use `clickman-worker` against the same database. Trusted server-side events go through the same validation and sanitization as device batches:

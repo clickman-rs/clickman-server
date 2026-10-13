@@ -34,6 +34,11 @@
         <div class="header-content">
           <a class="brand" href={`${base}/projects`}><span>c.</span>clickman</a>
           <div>
+            <a
+              class="mcp-link"
+              href="https://github.com/lockvoid/clickman-server/blob/main/docs/MCP.md"
+              >Connect MCP ↗</a
+            >
             <span class="tagline">Your database. Your data.</span><ClickmanButton
               variant="ghost"
               onclick={logout}>Sign out</ClickmanButton
@@ -85,6 +90,14 @@
   .tagline {
     color: var(--cm-color-muted);
     font-size: 0.75rem;
+  }
+  .mcp-link {
+    color: var(--cm-color-brand);
+    font-size: 0.75rem;
+    text-decoration: none;
+  }
+  .mcp-link:hover {
+    text-decoration: underline;
   }
   main {
     max-width: 80rem;

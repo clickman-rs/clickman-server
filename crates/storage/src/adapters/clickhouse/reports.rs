@@ -1,11 +1,12 @@
-use super::{ClickHouseAdapter, NativeEvent};
+use super::{ClickHouseAdapter, observations};
 use crate::{Error, MetadataStore, Result, lock_project, sql};
+use crate::{management::load_funnels, reports::save};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use clickhouse::Row;
-use clickman_analytics::{Activity, Occurrence, actives, retention};
+use clickman_analytics::{Activity, actives, retention};
 use sea_orm::{ConnectionTrait, TransactionTrait};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -84,33 +85,26 @@ impl ClickHouseAdapter {
                 .then(a["event"].as_str().cmp(&b["event"].as_str()))
         });
         save(&tx, project, "events", json!({"events":totals}), now).await?;
-        for funnel in metadata.funnels(project).await? {
-            let rows = Self::bounded("funnel events", self.client.query("SELECT ?fields FROM events FINAL WHERE project_id=? AND external_id<>'*' AND event IN ? AND toDate(occurred_at) BETWEEN toDate(?) AND toDate(?) ORDER BY occurred_at,message_id,received_at").bind(project).bind(funnel.event_names()).bind(funnel.from(now).date_naive().to_string()).bind(today.to_string()).fetch_all::<NativeEvent>()).await?;
-            let mut occurrences = Vec::with_capacity(rows.len());
-            for row in rows {
-                let actor = activities.get(&row.external_id).ok_or_else(|| {
-                    Error::Invalid("analytics export requires a completed metadata rotation".into())
-                })?;
-                let properties: Map<String, Value> = serde_json::from_str(&row.properties)
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-                let context: Map<String, Value> = serde_json::from_str(&row.context)
-                    .map_err(|e| Error::Invalid(e.to_string()))?;
-                let fields = properties
-                    .into_iter()
-                    .chain(
-                        context
-                            .into_iter()
-                            .map(|(key, value)| (format!("context.{key}"), value)),
-                    )
-                    .filter(|(_, value)| !value.is_null())
-                    .collect();
-                occurrences.push(Occurrence {
-                    at: row.occurred_at.timestamp_millis(),
-                    actor: actor.actor,
-                    event: row.event,
-                    fields,
-                });
-            }
+        for funnel in load_funnels(&tx, project).await? {
+            let request = self
+                .client
+                .query(
+                    "SELECT ?fields FROM events FINAL
+                 WHERE project_id=? AND external_id<>'*' AND event IN ?
+                   AND toDate(occurred_at) BETWEEN toDate(?) AND toDate(?)
+                 ORDER BY occurred_at,message_id,received_at",
+                )
+                .bind(project)
+                .bind(funnel.event_names())
+                .bind(funnel.from(now).date_naive().to_string())
+                .bind(today.to_string());
+            let occurrences = observations::collect(
+                request,
+                |external| activities.get(external).map(|actor| actor.actor),
+                None,
+                "funnel observations",
+            )
+            .await?;
             save(
                 &tx,
                 project,
@@ -123,15 +117,4 @@ impl ClickHouseAdapter {
         tx.commit().await?;
         Ok(())
     }
-}
-
-async fn save(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    key: &str,
-    result: Value,
-    now: DateTime<Utc>,
-) -> Result<()> {
-    db.execute_raw(sql("INSERT INTO clickman_reports(project_id,key,result,computed_at) VALUES($1,$2,$3,$4) ON CONFLICT(project_id,key) DO UPDATE SET result=EXCLUDED.result,computed_at=EXCLUDED.computed_at",vec![project.into(),key.into(),result.into(),now.into()])).await?;
-    Ok(())
 }

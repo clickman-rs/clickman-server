@@ -1,0 +1,21 @@
+query SelectedAnalytics($id: UUID!, $keys: [String!]!) {
+  project(id: $id) {
+    id
+    slug
+    name
+    canAdmin
+    settings
+    reports(keys: $keys) {
+      id
+      key
+      result
+      computedAt
+    }
+    funnels {
+      id
+      key
+      name
+      definition
+    }
+  }
+}

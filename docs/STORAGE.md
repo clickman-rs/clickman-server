@@ -12,6 +12,15 @@ SDKs use the unchanged [v1 batch protocol](PROTOCOL.md). The server derives the 
 
 ## Storage and jobs
 
+Ordinary project, key, funnel, destination and report operations use SeaORM
+entities. Authorized project lists and optional report-key selection filter in
+PostgreSQL before loading tenant metadata or result JSON. Native SQL remains
+where PostgreSQL-specific behavior is the storage contract: row/advisory locks,
+set-based inbox rotation, JSON rule guards/revisions, identity merges, bitmaps,
+chunk cursors and durable outbox updates. These operations all use the supplied
+connection or caller transaction; entity CRUD does not acquire an independent
+pool while holding that transaction.
+
 With the PostgreSQL adapter, events rotate into up to 4096-event chunks: delta-encoded UTC times, actor IDs and property columns, encoded as MessagePack and Zstandard. Changing property keys and large values produce smaller chunks to bound the column matrix before allocation. PostgreSQL stores the payload externally without recompressing it. Activity uses 366-bit annual maps. Reports include DAU/WAU/MAU, exact D1/D7/D30 cohort retention, distinct users per event, ordered funnels, median transition times and property breakdowns. The literal `*` contributes event counts without a distinct actor. Browser `anon:<UUID>` visitors count as distinct actors and can later be linked to an opaque account ID.
 
 Rotation processes unrotated rows and marks them atomically with the chunk and activity updates, rather than advancing a receive-time cursor. This includes late commits and supports retry after failure. Project row locks serialize rotations, erasure, report refresh and delivery. Ingest takes a shared project lock, so erasure cannot race an unfinished ingest transaction.

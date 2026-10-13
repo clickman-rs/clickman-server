@@ -16,7 +16,7 @@ Build/pack it using the commands below, copy it into the host repository, then
 install it by relative path:
 
 ```sh
-pnpm add ./vendor/clickman-dashboard-0.2.1.tgz
+pnpm add ./vendor/clickman-dashboard-0.2.2.tgz
 ```
 
 ```svelte
@@ -82,6 +82,8 @@ const client = createClickmanClient({
 });
 const analytics = createClickmanApi(client, projectId, lifetime.signal);
 const project = await analytics.project();
+// Fetch only the report needed by a tool, or [] for project metadata.
+const activity = await analytics.project({ reportKeys: ['actives'] });
 // On user, organization, grant or project change:
 lifetime.abort();
 client.dispose();

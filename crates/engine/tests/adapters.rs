@@ -648,3 +648,83 @@ async fn clickhouse_failure_retains_accepted_events_and_reopen_recovers_them() {
         .unwrap();
     assert_eq!(count(&native, id).await, 1);
 }
+
+#[tokio::test]
+#[ignore = "requires owned PostgreSQL and ClickHouse; use scripts/test-platform --clickhouse"]
+async fn clickhouse_report_refresh_uses_its_held_metadata_transaction_with_one_connection() {
+    let pg = Storage::connect(&std::env::var("TEST_DATABASE_URL").unwrap(), 1)
+        .await
+        .unwrap();
+    let (storage, _) = clickhouse(&pg).await;
+    let id = project(&storage).await;
+    let now = Utc::now();
+    storage
+        .insert_server(
+            id,
+            "web",
+            &[event(Uuid::new_v4(), "actor", "view", "mp4", now)],
+            now,
+        )
+        .await
+        .unwrap();
+    storage.rotate(id, now).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        storage.refresh_reports(id, now),
+    )
+    .await
+    .expect("report refresh tried to acquire a second connection while holding the only connection")
+    .unwrap();
+    assert_eq!(storage.reports(id).await.unwrap().len(), 4);
+    storage.close().await.unwrap();
+}
+
+async fn tied_predicate_projection_contract(storage: &Storage) {
+    let id = project(storage).await;
+    let now = Utc::now();
+    let at = now - Duration::hours(1);
+    storage.save_funnel(id, json!({"key":"repeat","name":"Repeat view","steps":[{"event":"view"},{"event":"view","where":{"format":"z"}}]})).await.unwrap();
+    storage.save_segment(id, json!({"key":"completed","name":"Completed","rule":{"kind":"funnel","funnel_key":"repeat","at_step":2}}), true, false).await.unwrap();
+    let mut first = event(Uuid::new_v4(), "same-actor", "view", "z", at);
+    first.properties.insert("a_unused".into(), json!("a"));
+    let mut second = event(Uuid::new_v4(), "same-actor", "view", "a", at);
+    second.properties.insert("a_unused".into(), json!("z"));
+    storage
+        .insert_server(id, "browser", &[first, second], now)
+        .await
+        .unwrap();
+    storage.rotate(id, now).await.unwrap();
+    storage.refresh_reports(id, now).await.unwrap();
+    storage.evaluate_segments(id, now).await.unwrap();
+    let report = storage
+        .reports(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|report| report.key == "funnel:repeat")
+        .unwrap();
+    assert_eq!(report.result["steps"][0]["actors"], 1);
+    assert_eq!(report.result["steps"][1]["actors"], 1);
+    let segment = storage
+        .segments(id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|segment| segment.definition.key == "completed")
+        .unwrap();
+    assert_eq!(segment.members, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires owned PostgreSQL; use scripts/test-platform"]
+async fn postgres_tied_funnel_report_and_projected_segment_observations_agree() {
+    tied_predicate_projection_contract(&postgres().await).await;
+}
+
+#[tokio::test]
+#[ignore = "requires owned PostgreSQL and ClickHouse; use scripts/test-platform --clickhouse"]
+async fn clickhouse_tied_funnel_report_and_projected_segment_observations_agree() {
+    let pg = postgres().await;
+    let (storage, _) = clickhouse(&pg).await;
+    tied_predicate_projection_contract(&storage).await;
+}

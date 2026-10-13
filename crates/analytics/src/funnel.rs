@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,7 +74,14 @@ impl Step {
         }
     }
     pub fn matches(&self, occurrence: &Occurrence) -> bool {
-        self.events().contains(&occurrence.event.as_str())
+        let event_matches = match &self.event {
+            Value::String(event) => event == &occurrence.event,
+            Value::Array(events) => events
+                .iter()
+                .any(|event| event.as_str() == Some(&occurrence.event)),
+            _ => false,
+        };
+        event_matches
             && self.filters.iter().all(|(key, value)| {
                 let actual = occurrence.fields.get(key).unwrap_or(&Value::Null);
                 match value {
@@ -112,9 +119,9 @@ impl Funnel {
         for step in &self.steps {
             let events = step.events();
             if events.is_empty()
-                || events
-                    .iter()
-                    .any(|e| e.is_empty() || e.chars().count() > 200)
+                || events.iter().any(|e| {
+                    e.is_empty() || e.chars().count() > 200 || e.chars().any(char::is_control)
+                })
                 || (step.event.is_array() && events.len() != step.event.as_array().unwrap().len())
             {
                 return Err(FunnelError(
@@ -227,6 +234,11 @@ impl Funnel {
         }
         let first = self.from(now).timestamp_millis();
         let last = now.timestamp_millis();
+        let predicate_keys: BTreeSet<_> = self
+            .steps
+            .iter()
+            .flat_map(|step| step.filters.keys().map(String::as_str))
+            .collect();
         let mut result = Vec::new();
         for mut journey in journeys.into_values() {
             let rank = |o: &Occurrence| {
@@ -235,16 +247,28 @@ impl Funnel {
                     .position(|s| s.matches(o))
                     .unwrap_or(self.steps.len())
             };
-            journey.sort_by(|a, b| {
-                a.at.cmp(&b.at)
-                    .then_with(|| rank(a).cmp(&rank(b)))
-                    .then(a.event.cmp(&b.event))
-                    .then_with(|| {
-                        serde_json::to_string(&a.fields)
-                            .expect("JSON fields")
-                            .cmp(&serde_json::to_string(&b.fields).expect("JSON fields"))
-                    })
-            });
+            journey.sort_by_key(|occurrence| occurrence.at);
+            for tied in journey.chunk_by_mut(|a, b| a.at == b.at) {
+                if tied.len() < 2 {
+                    continue;
+                }
+                // Reports retain full fields; segment reads project predicates.
+                // Predicate order must agree in both representations. Missing
+                // and explicit null match identically, so normalize them here.
+                // Cache only keys for actual timestamp ties, not every event.
+                tied.sort_by_cached_key(|occurrence| {
+                    let predicates: BTreeMap<_, _> = predicate_keys
+                        .iter()
+                        .map(|key| (*key, occurrence.fields.get(*key).unwrap_or(&Value::Null)))
+                        .collect();
+                    (
+                        rank(occurrence),
+                        occurrence.event.clone(),
+                        serde_json::to_string(&predicates).expect("JSON predicates"),
+                        serde_json::to_string(&occurrence.fields).expect("JSON fields"),
+                    )
+                });
+            }
             let Some(mut position) = journey
                 .iter()
                 .position(|o| (first..=last).contains(&o.at) && self.steps[0].matches(o))
@@ -276,6 +300,52 @@ impl Funnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn event_names_follow_the_ingestion_contract_for_control_characters_and_unicode() {
+        for event in [json!("view\npage"), json!(["view", "buy\u{0000}"])] {
+            assert!(Funnel::parse(json!({"key":"invalid","name":"Invalid","steps":[{"event":event},{"event":"buy"}]})).is_err());
+        }
+        assert!(Funnel::parse(json!({"key":"unicode","name":"Unicode","steps":[{"event":"просмотр"},{"event":["покупка","💚"]}]})).is_ok());
+    }
+
+    #[test]
+    fn unrelated_fields_do_not_change_completion_when_segment_observations_are_projected() {
+        let funnel = Funnel::parse(json!({"key":"repeat","name":"Repeat","steps":[{"event":"view"},{"event":"view","where":{"format":"z"}}]})).unwrap();
+        let now = Utc::now();
+        let at = (now - Duration::hours(1)).timestamp_millis();
+        let rows = vec![
+            Occurrence {
+                actor: 1,
+                at,
+                event: "view".into(),
+                fields: BTreeMap::from([
+                    ("a_unused".into(), json!("a")),
+                    ("format".into(), json!("z")),
+                ]),
+            },
+            Occurrence {
+                actor: 1,
+                at,
+                event: "view".into(),
+                fields: BTreeMap::from([
+                    ("a_unused".into(), json!("z")),
+                    ("format".into(), json!("a")),
+                ]),
+            },
+        ];
+        let projected: Vec<_> = rows
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.fields.retain(|key, _| key == "format");
+                row
+            })
+            .collect();
+        let complete = funnel.compute(rows, now);
+        let projected = funnel.compute(projected, now);
+        assert_eq!(complete["steps"], projected["steps"]);
+        assert_eq!(complete["steps"][1]["actors"], 1);
+    }
     #[test]
     fn unicode_duration_is_rejected_without_panicking() {
         for value in ["д", "12д", "💥", "12💥", ""] {

@@ -171,9 +171,13 @@ fn normalize_event(
         .and_then(Value::as_str)
         .and_then(parse_time)
         .ok_or(Reason::InvalidTimestamp)?;
-    let occurred_at = timestamp + skew;
-    if occurred_at > received_at + limits.max_future
-        || occurred_at < received_at - limits.max_event_age
+    let occurred_at = timestamp
+        .checked_add(skew)
+        .ok_or(Reason::TimestampOutOfRange)?;
+    // Compare bounded date differences rather than adding limits to receive
+    // time, which may itself be close to the representable date boundary.
+    if occurred_at - received_at > limits.max_future
+        || received_at - occurred_at > limits.max_event_age
     {
         return Err(Reason::TimestampOutOfRange);
     }

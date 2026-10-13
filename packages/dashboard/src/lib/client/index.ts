@@ -1,11 +1,14 @@
 import type { CachebayInstance } from 'cachebay';
 import {
   AnalyticsDocument,
+  SelectedAnalyticsDocument,
   SegmentsDocument,
   SaveFunnelDocument,
   SaveSegmentDocument,
   type AnalyticsQuery,
   type AnalyticsQueryVariables,
+  type SelectedAnalyticsQuery,
+  type SelectedAnalyticsQueryVariables,
   type SegmentsQuery,
   type SegmentsQueryVariables,
   type SaveFunnelMutation,
@@ -30,13 +33,19 @@ export function createClickmanApi(
   const active = () => lifetime.throwIfAborted();
   return {
     projectId,
-    async project() {
+    async project(options: { reportKeys?: string[] } = {}) {
       active();
-      const result = await client.executeQuery<AnalyticsQuery, AnalyticsQueryVariables>({
-        query: AnalyticsDocument,
-        variables: { id: projectId },
-        cachePolicy: 'network-only',
-      });
+      const result = options.reportKeys
+        ? await client.executeQuery<SelectedAnalyticsQuery, SelectedAnalyticsQueryVariables>({
+            query: SelectedAnalyticsDocument,
+            variables: { id: projectId, keys: options.reportKeys },
+            cachePolicy: 'network-only',
+          })
+        : await client.executeQuery<AnalyticsQuery, AnalyticsQueryVariables>({
+            query: AnalyticsDocument,
+            variables: { id: projectId },
+            cachePolicy: 'network-only',
+          });
       active();
       const data = dataOrThrow(result).project;
       if (data.id !== projectId) throw new Error('The server returned a different project.');

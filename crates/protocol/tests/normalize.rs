@@ -223,3 +223,32 @@ fn a_batch_over_the_event_limit_is_refused() {
 
     assert!(matches!(run(&batch(events)), Err(BatchError::Malformed(_))));
 }
+
+#[test]
+fn unrepresentable_clock_correction_rejects_only_that_event_without_panicking() {
+    let body = serde_json::to_vec(&json!({
+        "sentAt":"0000-01-01T00:00:00Z",
+        "batch":[
+            event(json!({"timestamp":"9999-12-31T23:59:59Z"})),
+            event(json!({"timestamp":"0000-01-01T00:00:00Z","messageId":"01926a2e-7b1c-7c3d-9f2e-5b1a2c3d4e60"})),
+        ],
+    })).unwrap();
+    let result = run(&body).unwrap();
+    assert_eq!(result.events.len(), 1);
+    assert_eq!(result.events[0].occurred_at, RECEIVED_AT);
+    assert_eq!(result.rejected.len(), 1);
+    assert_eq!(result.rejected[0].reason, Reason::TimestampOutOfRange);
+}
+
+#[test]
+fn age_checks_do_not_overflow_when_receive_time_is_near_the_representable_boundary() {
+    let received = datetime!(9999-12-31 23:59:59 UTC);
+    let body = serde_json::to_vec(&json!({
+        "sentAt":"9999-12-31T23:59:59Z",
+        "batch":[event(json!({"timestamp":"9999-12-31T23:59:59Z"}))],
+    }))
+    .unwrap();
+    let result = normalize(&body, received, &Sanitizer::default(), &Limits::default()).unwrap();
+    assert_eq!(result.events.len(), 1);
+    assert!(result.rejected.is_empty());
+}

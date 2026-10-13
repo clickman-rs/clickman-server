@@ -15,6 +15,13 @@ and the Cloud agent use the same typed GraphQL documents and Cachebay client.
 The agent SDK loop runs in the browser; the Rust SaaS host authenticates and
 budgets Fireworks inference without running an agent loop or storing prompts.
 
+The [MCP executable](MCP.md) lives in the same OSS Rust workspace. It bridges
+local stdio tools to an existing authenticated GraphQL endpoint, including a
+Cloud member session with Origin checks. It owns no accounts or database
+connections and adds no public network listener. Analysis/preview tools are
+read-only; funnel/segment saves require explicit operator opt-in and current
+project-admin authorization.
+
 ## Analytics adapters
 
 `Storage` is a facade over PostgreSQL `MetadataStore` and an
@@ -67,6 +74,13 @@ Project UUIDs remain globally unique. `(namespace, slug)` is unique; standalone
 uses the empty namespace, while Cloud assigns `saas:<organization ID>`. A
 request-local `ProjectCreator` capability creates and attaches an authorized
 project inside the host transaction without granting instance-root access.
+Its `created_role()` defaults to Reader; a host such as Cloud explicitly returns
+Admin when that matches the membership it attaches. This role applies only to
+the newly returned Project object's nested fields and `canAdmin`, so the create
+response can use its actual permissions before the next request reloads grants.
+It does not expand request-wide `Access`, authorize other mutation roots or
+survive into a subsequent request. The host still rolls the operation back when
+a later field fails.
 
 `ProjectPolicy` restricts access-key issuance and retention for session-only
 hosts. `IntegrationPolicy` restricts external credential references. Defaults
@@ -131,7 +145,10 @@ Filters share funnel event/property validation; `at_step` is 1-based. Funnel
 membership uses that funnel's range/window and first qualifying path. Timed
 conditions are reevaluated even without a new batch. Events at the same
 millisecond use deterministic order: timestamp, matching step position, event
-name, then serialized fields. A timestamp tie cannot establish the original
+name, serialized predicate fields, then full fields as a stable fallback for
+breakdown choices. Every funnel predicate key participates; missing and explicit
+null values compare identically, matching the filter contract. This keeps
+projected segment observations and full report reads consistent. A timestamp tie cannot establish the original
 application order; supply distinct event times when that distinction matters.
 
 The worker compares current membership with durable state. A transition from

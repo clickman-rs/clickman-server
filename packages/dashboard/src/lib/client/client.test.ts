@@ -20,24 +20,25 @@ function setup() {
   return { client, life, api: createClickmanApi(client, 'project-a', life.signal) };
 }
 test('headless tools use the host session transport and a fixed project scope', async () => {
-  const fetcher = vi.fn().mockResolvedValue(
-    new Response(
-      JSON.stringify({
-        data: {
-          __typename: 'Query',
-          project: {
-            __typename: 'Project',
-            id: 'project-a',
-            slug: 'web',
-            name: 'Web',
-            canAdmin: false,
-            settings: {},
-            reports: [],
-            funnels: [],
+  const fetcher = vi.fn().mockImplementation(
+    async () =>
+      new Response(
+        JSON.stringify({
+          data: {
+            __typename: 'Query',
+            project: {
+              __typename: 'Project',
+              id: 'project-a',
+              slug: 'web',
+              name: 'Web',
+              canAdmin: false,
+              settings: {},
+              reports: [],
+              funnels: [],
+            },
           },
-        },
-      }),
-    ),
+        }),
+      ),
   );
   vi.stubGlobal('fetch', fetcher);
   const { api } = setup();
@@ -49,6 +50,11 @@ test('headless tools use the host session transport and a fixed project scope', 
   expect(JSON.parse(init.body as string)).toMatchObject({
     variables: { id: 'project-a' },
     operationName: 'Analytics',
+  });
+  await api.project({ reportKeys: ['actives'] });
+  expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({
+    operationName: 'SelectedAnalytics',
+    variables: { id: 'project-a', keys: ['actives'] },
   });
 });
 test('a project scope that ends during a read cannot return the old result', async () => {

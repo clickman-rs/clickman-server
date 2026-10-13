@@ -1,5 +1,106 @@
 # Dashboard implementation and review
 
+## Refactor and MCP — 14 October 2026
+
+The user approved a review/refactor of all eight Clickman repositories, an MCP
+entry point, bug fixes, UI improvements and local commits. Ferment remains a
+session-authorized host and is left uncommitted. The primary agent reviewed the
+changes separately, with independent frontend/SDK review from the SaaS agent.
+
+The MCP executable lives in `apps/mcp`, with reusable typed tools in `crates/mcp`.
+The official Rust MCP SDK owns negotiation, transport framing and tool schemas.
+Eight read/preview tools and two explicitly enabled save tools call the existing
+GraphQL host. Token or member-cookie/Origin authentication, current project
+grants, response/input bounds and credential redaction are covered by real
+transport, stdio and PostgreSQL host tests. See [MCP setup](MCP.md).
+
+Core metadata CRUD now uses SeaORM entities. Cloud has twelve control-plane
+entities with typed stored enums and relations; team/grant queries are batched.
+Its six native PostgreSQL statements have specific queue, locking, atomic retry
+or engine-JSON reasons, documented in the [Cloud backend guide](../../clickman-saas/docs/BACKEND.md).
+The only Cloud migration adds three lookup indexes; populated up/down/up is
+tested. Native ClickHouse analytics and compressed PostgreSQL operations retain
+their specialized SQL. No generic repository layer or new account/analytics
+schema replaces the existing domain boundaries.
+
+The dashboard 0.2.2 separates funnel/segment editors, shared event-filter forms
+and webhook management. It adds funnel editing, preserves literal event names,
+alternative events, missing-event filters, paused status and fresh-draft defaults.
+Tables have column spacing and an accessible scroll region on small screens.
+The scoped CSS still excludes Preflight. The headless client can select report
+keys in PostgreSQL before transferring report JSON; omitted keys retain the
+existing all-report query. Cloud session refreshes publish only their newest
+result. Browser tools are split from provider composition, refresh visible
+collections after writes and acknowledge saved definitions even if refresh fails.
+The landing separates fictional data from its Svelte host and renders guide
+headings/contents, including the new MCP guide.
+
+Material review findings fixed with regressions:
+
+- ClickHouse report refresh re-acquired a one-connection metadata pool. Shared
+  transaction-bound loaders remove that deadlock. Funnel reports and segment
+  projections now order timestamp ties consistently; unrelated properties no
+  longer change membership. Limiter retries cannot overflow or refill twice
+  after out-of-order timestamps, and the client-bucket map is bounded.
+- Extreme protocol clock corrections return a rejection instead of panicking.
+  JSON strings produced by flattening obey the same Unicode character limit;
+  canonical snapshots match in all native and browser clients and legacy.
+- Cloud compound metadata mutations roll back completely on GraphQL failure;
+  mixed native ClickHouse/metadata mutations are rejected before execution.
+  New-project response permissions belong only to the returned node. Stripe
+  Checkout retries keep identical idempotent parameters, and complete SSE frames
+  are bounded as well as unfinished frames.
+- Browser collection validates configuration, keeps source identity fixed,
+  preserves old queue IDs during migration, reports expiry/capacity drops and
+  rejects invalid Unicode before storage. Revoked consent, close and a later
+  consent grant cannot send a previously retained queue snapshot. Native clients
+  validate setup before storage, expire data during long retries and retain
+  redirected batches. Swift safely rejects cyclic containers and preserves UInt64.
+- Legacy clients mirror those fixes. The legacy Rust client acknowledges the
+  final batch item instead of resending it forever; Rails validates trusted
+  events through its model, excludes future funnel completions and resets its
+  partition cache after rollback/retention.
+
+| Final local check                         | Result                                                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core Rust, owned PostgreSQL + ClickHouse  | 75 passed, zero failed/ignored; strict Clippy and rustfmt passed                                                                             |
+| MCP within those core tests               | 7 transport cases, 3 actual stdio cases and 1 real engine/authorization case                                                                 |
+| Cloud Rust, owned PostgreSQL + ClickHouse | 12 passed, zero failed/ignored; strict Clippy and rustfmt passed                                                                             |
+| Shared library / standalone units         | 5 + 4 passed; packed external consumer installed, typechecked, built and rendered without host Tailwind                                      |
+| Standalone / embedded browsers            | 13 + 13 passed against actual Rust/PostgreSQL                                                                                                |
+| Cloud browser tools / full browser flow   | 11 unit + 6 browser cases passed                                                                                                             |
+| Landing                                   | 3 browser cases, Astro/build/format checks passed; desktop/mobile screenshots reviewed                                                       |
+| Browser SDK 0.1.1                         | 70 unit + 2 Chromium cases; types/build/format passed                                                                                        |
+| Native Rust / Kotlin / Swift              | 104 Rust; 113 JVM + 3 Android; 93 macOS + 94 iOS; schema checks passed                                                                       |
+| Legacy                                    | 82 PostgreSQL + 79 SQLite Rails; 155 Rust; 93 macOS + 94 iOS; 113 JVM + 3 Android; 10 + 10 real native E2E cases; contract and Clippy passed |
+| Cloud recovery and container              | API/worker restart, dump/restore, sessions, source keys, credential references and resumed reports passed; non-root Docker flow passed       |
+| Core Docker                               | API/worker/dashboard/MCP image built; shipped MCP executable starts with `--help`                                                            |
+| Ferment compatibility                     | 3 HTTP + 4 analytics transaction cases and 27 production browser cases; zero skipped/flaky/failed browser outcomes                           |
+
+Frontend checks report zero errors/warnings. The named, focusable scroll region
+follows [MDN's keyboard scrolling guidance](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/overflow#accessibility);
+one explained Svelte warning exception preserves keyboard access. The final
+repack changed only that explanation and produces identical client/server
+compiled component code to the browser-tested version. Frozen installs and
+archive integrity checks cover Cloud, landing and Ferment. Consumer vendor
+READMEs record exact source commits and SHA-256 values.
+
+Evidence is retained in `/tmp/clickman-core-mcp-platform-final-3.log`,
+`/tmp/clickman-saas-post-created-role-final.log`,
+`/tmp/clickman-refactor-ui-{check,browser,browser-embedded,package}-final-*.log`,
+`/tmp/clickman-refactor-cloud-{unit,browser,recovery,container}-final-*.log`,
+`/tmp/clickman-refactor-landing-*-final-*.log`, `/tmp/clickman-js-*-final.log`,
+`/tmp/clickman-legacy-{gate,ios}-final.log` and the legacy `tmp/gates/` logs.
+Ferment's exact logs and unchanged staff/transaction boundary are recorded in
+its existing foundation review. An early custom runner omitted its required
+8 MiB stack setting; the standard runner and corrected browser invocation passed.
+
+This is local acceptance and repository distribution. No npm publication, push,
+remote CI run or production deployment is claimed. Stripe, SMTP, inference and
+delivery tests use owned local responses; live provider-account acceptance is
+separate. Query/buffering reductions are structural changes, not a measured
+throughput improvement.
+
 ## Agreed change — 13 October 2026
 
 The user approved one reusable Svelte dashboard package, a SvelteKit static

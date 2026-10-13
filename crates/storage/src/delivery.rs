@@ -1,18 +1,15 @@
+use crate::entities::destination;
 use crate::{Error, MetadataStore, ProjectSettings, Result, lock_project, sql};
 use chrono::{DateTime, Duration, Utc};
-use sea_orm::{ConnectionTrait, DatabaseTransaction, TransactionTrait};
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait, sea_query::OnConflict,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Destination {
-    pub id: Uuid,
-    pub project_id: Uuid,
-    pub name: String,
-    pub kind: String,
-    pub config: Value,
-}
+pub type Destination = destination::Model;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEvent {
     pub message_id: Uuid,
@@ -49,7 +46,11 @@ impl DeliveryPage {
 
 impl MetadataStore {
     pub async fn destinations(&self, project: Uuid) -> Result<Vec<Destination>> {
-        self.db.query_all_raw(sql("SELECT id,project_id,name,kind,config FROM clickman_destinations WHERE project_id=$1 ORDER BY name",vec![project.into()])).await?.into_iter().map(|r|Ok(Destination{id:r.try_get("","id")?,project_id:r.try_get("","project_id")?,name:r.try_get("","name")?,kind:r.try_get("","kind")?,config:r.try_get("","config")?})).collect()
+        Ok(destination::Entity::find()
+            .filter(destination::Column::ProjectId.eq(project))
+            .order_by_asc(destination::Column::Name)
+            .all(&self.db)
+            .await?)
     }
     pub async fn save_destination(
         &self,
@@ -64,28 +65,40 @@ impl MetadataStore {
         }
         let tx = self.db.begin().await?;
         lock_project(&tx, project).await?;
-        let row=tx.query_one_raw(sql("INSERT INTO clickman_destinations(id,project_id,name,kind,config) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id,name) DO UPDATE SET kind=EXCLUDED.kind,config=EXCLUDED.config RETURNING id",vec![Uuid::new_v4().into(),project.into(),name.into(),kind.into(),config.clone().into()])).await?.expect("RETURNING destination");
-        let id: Uuid = row.try_get("", "id")?;
-        tx.execute_raw(sql("INSERT INTO clickman_deliveries(project_id,destination_id,message_id) SELECT $1,$2,message_id FROM clickman_events WHERE project_id=$1 ON CONFLICT DO NOTHING",vec![project.into(),id.into()])).await?;
-        tx.commit().await?;
-        Ok(Destination {
-            id,
-            project_id: project,
-            name: name.into(),
-            kind: kind.into(),
-            config,
+        let saved = destination::Entity::insert(destination::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            project_id: Set(project),
+            name: Set(name.into()),
+            kind: Set(kind.into()),
+            config: Set(config),
         })
+        .on_conflict(
+            OnConflict::columns([destination::Column::ProjectId, destination::Column::Name])
+                .update_columns([destination::Column::Kind, destination::Column::Config])
+                .to_owned(),
+        )
+        .exec_with_returning(&tx)
+        .await?;
+        // Set-based backfill stays in the same locked project transaction.
+        tx.execute_raw(sql(
+            "INSERT INTO clickman_deliveries(project_id,destination_id,message_id)
+             SELECT $1,$2,message_id FROM clickman_events WHERE project_id=$1
+             ON CONFLICT DO NOTHING",
+            vec![project.into(), saved.id.into()],
+        ))
+        .await?;
+        tx.commit().await?;
+        Ok(saved)
     }
     pub async fn delete_destination(&self, project: Uuid, id: Uuid) -> Result<bool> {
         let tx = self.db.begin().await?;
         lock_project(&tx, project).await?;
-        let deleted = tx
-            .execute_raw(sql(
-                "DELETE FROM clickman_destinations WHERE project_id=$1 AND id=$2",
-                vec![project.into(), id.into()],
-            ))
+        let deleted = destination::Entity::delete_many()
+            .filter(destination::Column::ProjectId.eq(project))
+            .filter(destination::Column::Id.eq(id))
+            .exec(&tx)
             .await?
-            .rows_affected()
+            .rows_affected
             > 0;
         tx.commit().await?;
         Ok(deleted)
@@ -104,13 +117,13 @@ impl MetadataStore {
         let p = lock_project(&tx, project).await?;
         let settings: ProjectSettings =
             serde_json::from_value(p.settings).map_err(|e| Error::Invalid(e.to_string()))?;
-        let Some(d)=tx.query_one_raw(sql("SELECT id,project_id,name,kind,config FROM clickman_destinations WHERE project_id=$1 AND id=$2",vec![project.into(),destination.into()])).await? else {tx.commit().await?; return Ok(None)};
-        let destination = Destination {
-            id: d.try_get("", "id")?,
-            project_id: project,
-            name: d.try_get("", "name")?,
-            kind: d.try_get("", "kind")?,
-            config: d.try_get("", "config")?,
+        let Some(destination) = destination::Entity::find_by_id(destination)
+            .filter(destination::Column::ProjectId.eq(project))
+            .one(&tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
         };
         let rows=tx.query_all_raw(sql("SELECT e.message_id,e.source,e.occurred_at,e.received_at,e.external_id,e.event,e.properties,e.context FROM clickman_events e JOIN clickman_deliveries d ON d.project_id=e.project_id AND d.message_id=e.message_id WHERE e.project_id=$1 AND d.destination_id=$2 AND d.completed_at IS NULL AND d.next_attempt_at<=$3 AND e.received_at<=$4 ORDER BY e.received_at,e.message_id LIMIT $5",vec![project.into(),destination.id.into(),now.into(),(now-Duration::seconds(settings.rotation_lag_seconds.into())).into(),i64::from(limit).into()])).await?;
         let events: Vec<StoredEvent> = rows

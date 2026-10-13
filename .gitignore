@@ -26,5 +26,6 @@ tmp/
 *.keystore
 *.db
 *.log
+rustc-ice-*.txt
 .idea/
 *.iml

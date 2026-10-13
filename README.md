@@ -102,6 +102,7 @@ owns authentication and routing.
 | [Protocol fixtures](protocol/README.md)           | The canonical contract shared by the three SDKs.                                    |
 | [Dashboard package](packages/dashboard/README.md) | Public Svelte API, client ownership, styles and release checks.                     |
 | [Platform architecture](docs/PLATFORM.md)         | Adapters, browser identities, segments, webhooks and SaaS boundaries.               |
+| [MCP server](docs/MCP.md)                         | Authenticated stdio tools for reports, funnels and segments.                        |
 
 ## Workspace
 
@@ -114,6 +115,7 @@ owns authentication and routing.
 | `crates/jobs`             | rotation, retention, reports and delivery orchestration                                  |
 | `crates/graphql`          | async-graphql schema and project authorization                                           |
 | `crates/engine`           | embeddable Axum router, authentication and trusted tracking                              |
+| `crates/mcp`, `apps/mcp`  | typed MCP tools and stdio executable over an existing authenticated GraphQL host         |
 | `apps/api`, `apps/worker` | deployable Rust binaries                                                                 |
 | `apps/web`                | SvelteKit static standalone host: auth, client, layout and routes                        |
 | `packages/dashboard`      | shared Svelte workspace, internal components, operations/types and compiled Tailwind CSS |
@@ -176,7 +178,7 @@ results and the limits of the local comparison benchmark.
 
 Build the image with `docker build -f deploy/Dockerfile -t clickman-server:local .`. Copy `deploy/.env.example` to `deploy/.env`, set the database password/URL and instance token, then run `docker compose --env-file deploy/.env -f deploy/compose.yaml up --build -d`. Add project destination credential variables to the worker environment when enabling Mixpanel. The published port binds to loopback for a host-owned HTTPS reverse proxy.
 
-The Docker image contains the API, worker, and built dashboard. The Compose file
+The Docker image contains the API, worker, MCP executable and built dashboard. The Compose file
 also starts PostgreSQL and binds the published API port to loopback. Put your
 HTTPS reverse proxy in front of it; keep deployment credentials outside Git.
 

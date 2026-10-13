@@ -1,0 +1,31 @@
+[package]
+name = "clickman-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Scoped Model Context Protocol tools for Clickman GraphQL hosts"
+
+[dependencies]
+clickman-analytics.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+clickman-engine.workspace = true
+clickman-storage.workspace = true
+chrono.workspace = true
+sea-orm.workspace = true
+rmcp = { workspace = true, features = ["client"] }
+tokio-stream = "0.1"
+
+[lints]
+workspace = true

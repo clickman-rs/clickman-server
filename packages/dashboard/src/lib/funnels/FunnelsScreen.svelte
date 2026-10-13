@@ -12,6 +12,8 @@
   import { number, percentage, type FunnelReport } from '../reports';
   import { createAction } from '../ui/action.svelte';
   import { dataOrThrow } from '../graphql/errors';
+  import FunnelEditor from './FunnelEditor.svelte';
+  import type { FunnelDefinition } from '../client/types';
   let {
     projectId,
     canAdmin,
@@ -31,35 +33,15 @@
   const remove = createMutation<DeleteFunnelMutation, DeleteFunnelMutationVariables>({
     query: DeleteFunnelDocument,
   });
-  let adding = $state(false);
-  let name = $state('');
-  let key = $state('');
-  let conversionWindow = $state('7d');
-  let range = $state('90d');
-  let breakdown = $state('');
   const action = createAction();
-  let steps = $state([
-    { event: '', where: '' },
-    { event: '', where: '' },
-  ]);
-  async function submit(event: SubmitEvent) {
-    event.preventDefault();
+  type Definition = (typeof definitions)[number];
+  let draft = $state<{ funnel?: Definition } | null>(null);
+  async function submit(definition: FunnelDefinition) {
     if (!canAdmin) return;
     await action.run(async () => {
-      const definition = {
-        key,
-        name,
-        window: conversionWindow,
-        range,
-        breakdown: breakdown || null,
-        steps: steps.map((s) => ({
-          event: s.event.includes(',') ? s.event.split(',').map((e) => e.trim()) : s.event.trim(),
-          ...(s.where.trim() ? { where: JSON.parse(s.where) } : {}),
-        })),
-      };
       dataOrThrow<SaveFunnelMutation>(await save.execute({ projectId, definition }));
       await onchanged();
-      adding = false;
+      draft = null;
     });
   }
   async function deleteFunnel(key: string) {
@@ -67,6 +49,7 @@
     await action.run(async () => {
       dataOrThrow<DeleteFunnelMutation>(await remove.execute({ projectId, key }));
       await onchanged();
+      if (draft?.funnel?.key === key) draft = null;
     });
   }
 </script>
@@ -81,63 +64,19 @@
   {#if canAdmin}<Button
       variant="secondary"
       disabled={action.busy}
-      onclick={() => (adding = !adding)}>+ New funnel</Button
+      onclick={() => (draft = draft && !draft.funnel ? null : {})}>+ New funnel</Button
     >{/if}
 </div>
 {#if action.error}<div role="alert" class="cm-error cm:mb-5">{action.error}</div>{/if}
-{#if adding}
-  <form onsubmit={submit} class="cm-surface cm:mb-6 cm:p-6">
-    <fieldset disabled={action.busy} class="cm:grid cm:gap-4 cm:sm:grid-cols-2">
-      <label>Name<input bind:value={name} required placeholder="Purchase" /></label><label
-        >Key<input bind:value={key} required pattern="[a-z0-9_]+" placeholder="purchase" /></label
-      >
-      <label
-        >Conversion window<input
-          bind:value={conversionWindow}
-          required
-          pattern="[1-9][0-9]*[hd]"
-        /></label
-      ><label>Entry range<input bind:value={range} required pattern="[1-9][0-9]*[hd]" /></label>
-      <label class="cm:sm:col-span-2"
-        >Breakdown property (optional)<input
-          bind:value={breakdown}
-          placeholder="context.os.name"
-        /></label
-      >
-      <div class="cm:sm:col-span-2">
-        <h3 class="cm:mb-3">Steps</h3>
-        <div class="cm:grid cm:gap-3">
-          {#each steps as step, i}<div class="cm:rounded-lg cm:bg-canvas cm:p-4">
-              <div class="cm:mb-3 cm:flex cm:items-center cm:justify-between">
-                <span class="cm-section-label">Step {i + 1}</span>{#if steps.length > 2}<button
-                    type="button"
-                    class="cm:text-xs cm:text-muted"
-                    onclick={() => (steps = steps.filter((_, index) => index !== i))}>Remove</button
-                  >{/if}
-              </div>
-              <label
-                >Event name<input
-                  bind:value={step.event}
-                  required
-                  placeholder="purchase_started"
-                /></label
-              ><label class="cm:mt-3"
-                >Property filters (optional)<input
-                  bind:value={step.where}
-                  placeholder={'{"store":"app_store"}'}
-                /></label
-              >
-            </div>{/each}
-        </div>
-      </div>
-      <div class="cm:flex cm:flex-wrap cm:gap-3 cm:sm:col-span-2">
-        {#if steps.length < 10}<Button
-            variant="secondary"
-            onclick={() => (steps = [...steps, { event: '', where: '' }])}>+ Add step</Button
-          >{/if}<Button type="submit">Save funnel</Button>
-      </div>
-    </fieldset>
-  </form>
+{#if draft && canAdmin}
+  {#key draft.funnel?.id ?? 'new'}
+    <FunnelEditor
+      definition={draft.funnel?.definition as FunnelDefinition | undefined}
+      busy={action.busy}
+      onsave={submit}
+      oncancel={() => (draft = null)}
+    />
+  {/key}
 {/if}
 {#if !definitions.length}<div class="cm-surface cm-empty">
     No funnels yet.{#if canAdmin}
@@ -146,7 +85,7 @@
 <div class="cm:grid cm:gap-5">
   {#each definitions as definition}
     {@const report = reports.find((r) => r.key === definition.key)}
-    <section class="cm-surface cm:p-6">
+    <section class="cm-surface cm:p-6" aria-label={definition.name}>
       <div class="cm:mb-6 cm:flex cm:justify-between">
         <div>
           <h2>{definition.name}</h2>
@@ -156,11 +95,17 @@
             )} to convert
           </p>
         </div>
-        {#if canAdmin}<Button
-            variant="ghost"
-            disabled={action.busy}
-            onclick={() => deleteFunnel(definition.key)}>Delete</Button
-          >{/if}
+        {#if canAdmin}<div class="cm:flex cm:items-start cm:gap-3">
+            <Button
+              variant="ghost"
+              disabled={action.busy}
+              onclick={() => (draft = { funnel: definition })}>Edit</Button
+            ><Button
+              variant="ghost"
+              disabled={action.busy}
+              onclick={() => deleteFunnel(definition.key)}>Delete</Button
+            >
+          </div>{/if}
       </div>
       {#if report}<div class="cm:grid cm:gap-4 cm:sm:grid-cols-2 cm:lg:grid-cols-4">
           {#each report.steps as step, i}<div class="cm:rounded-xl cm:border cm:border-line cm:p-4">

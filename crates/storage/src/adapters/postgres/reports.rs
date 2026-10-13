@@ -1,8 +1,9 @@
 use crate::{Error, Result, lock_project, sql};
+use crate::{management::load_funnels, reports::save};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
-use clickman_analytics::{Activity, Funnel, Occurrence, actives, decode, retention};
+use clickman_analytics::{Activity, Occurrence, actives, decode, retention};
 use sea_orm::{ConnectionTrait, TransactionTrait};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
@@ -39,18 +40,7 @@ impl super::PostgresContext<'_> {
         let activity: Vec<_> = activity.into_values().collect();
         save(&tx, project, "actives", actives(&activity, today), now).await?;
         save(&tx, project, "retention", retention(&activity, today), now).await?;
-        let funnels: Vec<Funnel> = tx
-            .query_all_raw(sql(
-                "SELECT definition FROM clickman_funnels WHERE project_id=$1 ORDER BY key",
-                vec![project.into()],
-            ))
-            .await?
-            .into_iter()
-            .map(|r| {
-                Funnel::parse(r.try_get("", "definition")?)
-                    .map_err(|e| Error::Invalid(e.to_string()))
-            })
-            .collect::<Result<_>>()?;
+        let funnels = load_funnels(&tx, project).await?;
         let from = funnels
             .iter()
             .map(|f| f.from(now).date_naive())
@@ -68,6 +58,12 @@ impl super::PostgresContext<'_> {
             .collect::<std::result::Result<_, sea_orm::DbErr>>()?;
         let mut totals: BTreeMap<String, (u64, BTreeSet<i64>)> = BTreeMap::new();
         let mut journeys: Vec<Vec<Occurrence>> = vec![vec![]; funnels.len()];
+        let mut matching: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, funnel) in funnels.iter().enumerate() {
+            for event in funnel.event_names().into_iter().collect::<BTreeSet<_>>() {
+                matching.entry(event).or_default().push(index);
+            }
+        }
         let mut cursor = (from, 0i64, 0i32);
         loop {
             let page=tx.query_all_raw(sql("SELECT c.day,c.event_name_id,c.seq,c.payload,n.name FROM clickman_chunks c JOIN clickman_event_names n ON n.project_id=c.project_id AND n.id=c.event_name_id WHERE c.project_id=$1 AND c.day BETWEEN $2 AND $3 AND (c.day,c.event_name_id,c.seq)>($4,$5,$6) ORDER BY c.day,c.event_name_id,c.seq LIMIT 64",vec![project.into(),from.into(),today.into(),cursor.0.into(),cursor.1.into(),cursor.2.into()])).await?;
@@ -92,12 +88,7 @@ impl super::PostgresContext<'_> {
                     let Some(actor) = canonical.get(&row.actor) else {
                         continue;
                     };
-                    for (i, funnel) in funnels
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, f)| f.event_names().contains(&name))
-                    {
-                        let _ = funnel;
+                    for &i in matching.get(&name).into_iter().flatten() {
                         journeys[i].push(Occurrence {
                             at: day
                                 .and_hms_opt(0, 0, 0)
@@ -110,7 +101,9 @@ impl super::PostgresContext<'_> {
                             fields: row
                                 .fields
                                 .iter()
-                                .filter_map(|(id, v)| keys.get(id).map(|k| (k.clone(), v.clone())))
+                                .filter_map(|(id, v)| {
+                                    keys.get(id).map(|key| (key.clone(), v.clone()))
+                                })
                                 .collect(),
                         });
                     }
@@ -141,15 +134,4 @@ impl super::PostgresContext<'_> {
         tx.commit().await?;
         Ok(())
     }
-}
-
-async fn save(
-    db: &impl ConnectionTrait,
-    project: Uuid,
-    key: &str,
-    result: Value,
-    now: DateTime<Utc>,
-) -> Result<()> {
-    db.execute_raw(sql("INSERT INTO clickman_reports(project_id,key,result,computed_at) VALUES($1,$2,$3,$4) ON CONFLICT(project_id,key) DO UPDATE SET result=EXCLUDED.result,computed_at=EXCLUDED.computed_at",vec![project.into(),key.into(),result.into(),now.into()])).await?;
-    Ok(())
 }

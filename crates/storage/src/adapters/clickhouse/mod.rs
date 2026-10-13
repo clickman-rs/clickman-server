@@ -1,3 +1,4 @@
+mod observations;
 mod reports;
 
 use super::{AnalyticsAdapter, PostgresAdapter};
@@ -114,43 +115,32 @@ impl AnalyticsAdapter for ClickHouseAdapter {
         query: &crate::ObservationQuery,
     ) -> Result<Vec<clickman_analytics::Occurrence>> {
         let db = metadata.connection();
-        let actors:std::collections::BTreeMap<String,i64>=db.query_all_raw(sql("SELECT a.external_id,c.id FROM clickman_actors a JOIN clickman_actors c ON c.project_id=a.project_id AND c.id=COALESCE(a.merged_into_id,a.id) WHERE a.project_id=$1 AND a.erased_at IS NULL AND c.erased_at IS NULL AND c.external_id<>'*'",vec![project.into()])).await?.into_iter().map(|r|Ok((r.try_get("","external_id")?,r.try_get("","id")?))).collect::<Result<_>>()?;
-        let request=self.client.query("SELECT ?fields FROM events FINAL WHERE project_id=? AND external_id<>'*' AND event IN ? AND occurred_at BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?) ORDER BY occurred_at,message_id,received_at").bind(project).bind(&query.events).bind(query.from.timestamp_millis()).bind(query.to.timestamp_millis());
-        let mut cursor = request
-            .fetch::<NativeEvent>()
-            .map_err(|source| Error::Backend {
-                operation: "segment observations",
-                source: Box::new(source),
-            })?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
-        let mut observations = Vec::new();
-        loop {
-            let row = tokio::time::timeout_at(deadline, cursor.next())
-                .await
-                .map_err(|source| Error::Backend {
-                    operation: "segment observations",
-                    source: Box::new(source),
-                })?
-                .map_err(|source| Error::Backend {
-                    operation: "segment observations",
-                    source: Box::new(source),
-                })?;
-            let Some(row) = row else { break };
-            let actor = *actors.get(&row.external_id).ok_or_else(|| {
-                Error::Invalid("analytics export requires a completed metadata rotation".into())
-            })?;
-            let properties =
-                serde_json::from_str(&row.properties).map_err(|e| Error::Invalid(e.to_string()))?;
-            let context =
-                serde_json::from_str(&row.context).map_err(|e| Error::Invalid(e.to_string()))?;
-            observations.push(clickman_analytics::Occurrence {
-                actor,
-                at: row.occurred_at.timestamp_millis(),
-                event: row.event,
-                fields: crate::observations::select_fields(properties, context, &query.fields),
-            });
-        }
-        Ok(observations)
+        let actors: std::collections::BTreeMap<String,i64> = db.query_all_raw(sql(
+            "SELECT a.external_id,c.id
+             FROM clickman_actors a
+             JOIN clickman_actors c ON c.project_id=a.project_id AND c.id=COALESCE(a.merged_into_id,a.id)
+             WHERE a.project_id=$1 AND a.erased_at IS NULL AND c.erased_at IS NULL AND c.external_id<>'*'",
+            vec![project.into()],
+        )).await?.into_iter().map(|row| Ok((row.try_get("", "external_id")?, row.try_get("", "id")?))).collect::<Result<_>>()?;
+        let request = self
+            .client
+            .query(
+                "SELECT ?fields FROM events FINAL
+             WHERE project_id=? AND external_id<>'*' AND event IN ?
+               AND occurred_at BETWEEN fromUnixTimestamp64Milli(?) AND fromUnixTimestamp64Milli(?)
+             ORDER BY occurred_at,message_id,received_at",
+            )
+            .bind(project)
+            .bind(&query.events)
+            .bind(query.from.timestamp_millis())
+            .bind(query.to.timestamp_millis());
+        observations::collect(
+            request,
+            |external| actors.get(external).copied(),
+            Some(&query.fields),
+            "segment observations",
+        )
+        .await
     }
     async fn migrate(&self, metadata: &MetadataStore) -> Result<()> {
         Self::independent(metadata)?;

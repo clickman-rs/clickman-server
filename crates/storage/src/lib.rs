@@ -4,6 +4,7 @@ mod connection;
 mod delivery;
 pub mod entities;
 mod identity;
+mod keys;
 mod observations;
 mod segments;
 mod webhooks;
@@ -29,7 +30,8 @@ use std::ops::Deref;
 
 pub use config::{Access, ProjectSettings, RateLimit, Role};
 pub use delivery::{DeliveryPage, Destination, StoredEvent};
-pub use management::{AccessKey, IssuedKey, Project, WriteIdentity, WriteKey};
+pub use keys::{AccessKey, IssuedKey, WriteIdentity, WriteKey};
+pub use management::Project;
 pub use reports::Report;
 
 #[derive(Debug, thiserror::Error)]

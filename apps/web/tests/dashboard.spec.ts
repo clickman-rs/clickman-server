@@ -66,6 +66,127 @@ async function project(request: APIRequestContext, name: string): Promise<string
   return data.createProject.id;
 }
 
+test('segment edits preserve alternative events and missing-event property filters', async ({
+  page,
+  request,
+}) => {
+  const id = await project(request, 'Segment edit contract');
+  const definition = {
+    key: 'abandoned_paid',
+    name: 'Paid checkout without completion',
+    rule: {
+      kind: 'inactive_after',
+      entry: { event: ['checkout_started', 'checkout_resumed'], where: { plan: 'paid' } },
+      absent: { event: ['purchase', 'subscription_started'], where: { currency: ['USD', 'EUR'] } },
+      after: '24h',
+      range: '30d',
+    },
+  };
+  const saved = await rootGraphql(
+    request,
+    'mutation($id:UUID!,$definition:JSON!){saveSegment(projectId:$id,definition:$definition){definition}}',
+    { id, definition },
+  );
+  await page.goto(`projects/${id}/segments`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page
+    .getByRole('row', { name: /Paid checkout without completion/ })
+    .getByRole('button', { name: 'Edit', exact: true })
+    .click();
+  await page.getByLabel('Name', { exact: true }).fill('Renamed paid checkout');
+  await page.getByRole('button', { name: 'Save segment', exact: true }).click();
+  await expect(page.getByRole('row', { name: /Renamed paid checkout/ })).toBeVisible();
+  const result = await rootGraphql(
+    request,
+    'query($id:UUID!){project(id:$id){segments{definition}}}',
+    { id },
+  );
+  expect(result.project.segments[0].definition.rule).toEqual(saved.saveSegment.definition.rule);
+});
+
+test('new segment drafts do not inherit backfill or conditions from an edited segment', async ({
+  page,
+  request,
+}) => {
+  const id = await project(request, 'New segment draft contract');
+  await rootGraphql(
+    request,
+    'mutation($id:UUID!,$definition:JSON!){saveSegment(projectId:$id,definition:$definition,fireExisting:true){id}}',
+    {
+      id,
+      definition: {
+        key: 'existing',
+        name: 'Existing backfill audience',
+        rule: {
+          kind: 'event',
+          filter: { event: 'purchase', where: { plan: 'paid' } },
+          range: '30d',
+        },
+      },
+    },
+  );
+  await page.goto(`projects/${id}/segments`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page
+    .getByRole('row', { name: /Existing backfill audience/ })
+    .getByRole('button', { name: 'Edit', exact: true })
+    .click();
+  await expect(page.getByLabel('Emit entry events', { exact: false })).toBeChecked();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: '+ New segment', exact: true }).click();
+  await expect(page.getByLabel('Emit entry events', { exact: false })).not.toBeChecked();
+  await expect(page.getByLabel('Event', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('Property filters (JSON, optional)', { exact: true })).toHaveValue(
+    '',
+  );
+});
+
+test('funnel editing preserves alternatives, literal event names and property filters', async ({
+  page,
+  request,
+}) => {
+  const id = await project(request, 'Funnel editor contract');
+  const definition = {
+    key: 'purchase',
+    name: 'Purchase before edit',
+    window: '24h',
+    range: '30d',
+    breakdown: 'plan',
+    steps: [
+      { event: ['checkout_started', 'checkout_resumed'], where: { plan: ['paid', 'trial'] } },
+      { event: ' purchase,completed ', where: { currency: 'USD' } },
+    ],
+  };
+  const saved = await rootGraphql(
+    request,
+    'mutation($id:UUID!,$definition:JSON!){saveFunnel(projectId:$id,definition:$definition){definition}}',
+    { id, definition },
+  );
+  await page.goto(`projects/${id}/funnels`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page
+    .getByRole('region', { name: 'Purchase before edit', exact: true })
+    .getByRole('button', { name: 'Edit', exact: true })
+    .click();
+  await page.getByLabel('Name', { exact: true }).fill('Purchase after edit');
+  await page.getByRole('button', { name: 'Save funnel', exact: true }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Purchase after edit', exact: true }),
+  ).toBeVisible();
+  const result = await rootGraphql(
+    request,
+    'query($id:UUID!){project(id:$id){funnels{definition}}}',
+    { id },
+  );
+  expect(result.project.funnels[0].definition).toEqual({
+    ...saved.saveFunnel.definition,
+    name: 'Purchase after edit',
+  });
+});
+
 test.beforeEach(async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));

@@ -15,6 +15,12 @@ pub type ClickmanSchema = Schema<Query, Mutation, EmptySubscription>;
 /// attaching the project share the host's transaction and authorization policy.
 #[async_trait::async_trait]
 pub trait ProjectCreator: Send + Sync {
+    /// Permission on the newly returned object only. A host that attaches the
+    /// creator as an administrator opts in; existing implementations retain a
+    /// conservative reader role without changing request-wide Access.
+    fn created_role(&self) -> Role {
+        Role::Reader
+    }
     async fn create(
         &self,
         storage: &Storage,
@@ -115,11 +121,10 @@ impl Query {
         let access = access(ctx)?;
         let mut connection = Connection::new(false, false);
         connection.edges = store(ctx)?
-            .projects()
+            .accessible_projects(access)
             .await
             .map_err(error)?
             .into_iter()
-            .filter(|p| access.can_read(p.id))
             .map(|p| Edge::new(p.id.to_string(), Project::from(p)))
             .collect();
         Ok(connection)
@@ -145,6 +150,8 @@ pub struct Project {
     pub created_at: DateTime<Utc>,
     #[graphql(skip)]
     uuid: Uuid,
+    #[graphql(skip)]
+    created_role: Option<Role>,
 }
 impl From<clickman_storage::Project> for Project {
     fn from(p: clickman_storage::Project) -> Self {
@@ -155,13 +162,32 @@ impl From<clickman_storage::Project> for Project {
             settings: Json(p.settings),
             created_at: p.created_at,
             uuid: p.id,
+            created_role: None,
+        }
+    }
+}
+impl Project {
+    fn read(&self, ctx: &Context<'_>) -> async_graphql::Result<()> {
+        let permissions = access(ctx)?;
+        if self.created_role.is_some() || permissions.can_read(self.uuid) {
+            Ok(())
+        } else {
+            Err(denied("project access denied"))
+        }
+    }
+    fn admin(&self, ctx: &Context<'_>) -> async_graphql::Result<()> {
+        let permissions = access(ctx)?;
+        if self.created_role == Some(Role::Admin) || permissions.can_admin(self.uuid) {
+            Ok(())
+        } else {
+            Err(denied("project administration denied"))
         }
     }
 }
 #[ComplexObject]
 impl Project {
     async fn segments(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Segment>> {
-        read(ctx, self.uuid)?;
+        self.read(ctx)?;
         Ok(store(ctx)?
             .segments(self.uuid)
             .await
@@ -171,7 +197,7 @@ impl Project {
             .collect())
     }
     async fn webhooks(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Webhook>> {
-        admin(ctx, self.uuid)?;
+        self.admin(ctx)?;
         Ok(store(ctx)?
             .webhooks(self.uuid)
             .await
@@ -185,7 +211,7 @@ impl Project {
         ctx: &Context<'_>,
         #[graphql(default = 50)] limit: u64,
     ) -> async_graphql::Result<Vec<WebhookLog>> {
-        admin(ctx, self.uuid)?;
+        self.admin(ctx)?;
         Ok(store(ctx)?
             .webhook_logs(self.uuid, limit)
             .await
@@ -195,12 +221,16 @@ impl Project {
             .collect())
     }
     async fn can_admin(&self, ctx: &Context<'_>) -> async_graphql::Result<bool> {
-        Ok(access(ctx)?.can_admin(self.uuid))
+        Ok(access(ctx)?.can_admin(self.uuid) || self.created_role == Some(Role::Admin))
     }
-    async fn reports(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Report>> {
-        read(ctx, self.uuid)?;
+    async fn reports(
+        &self,
+        ctx: &Context<'_>,
+        keys: Option<Vec<String>>,
+    ) -> async_graphql::Result<Vec<Report>> {
+        self.read(ctx)?;
         Ok(store(ctx)?
-            .reports(self.uuid)
+            .filtered_reports(self.uuid, keys.as_deref())
             .await
             .map_err(error)?
             .into_iter()
@@ -213,7 +243,7 @@ impl Project {
             .collect())
     }
     async fn funnels(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Funnel>> {
-        read(ctx, self.uuid)?;
+        self.read(ctx)?;
         Ok(store(ctx)?
             .funnels(self.uuid)
             .await
@@ -228,7 +258,7 @@ impl Project {
             .collect())
     }
     async fn write_keys(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<WriteKey>> {
-        admin(ctx, self.uuid)?;
+        self.admin(ctx)?;
         Ok(store(ctx)?
             .write_keys(self.uuid)
             .await
@@ -242,7 +272,7 @@ impl Project {
             .collect())
     }
     async fn access_keys(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<AccessKey>> {
-        admin(ctx, self.uuid)?;
+        self.admin(ctx)?;
         Ok(store(ctx)?
             .access_keys(self.uuid)
             .await
@@ -257,7 +287,7 @@ impl Project {
             .collect())
     }
     async fn destinations(&self, ctx: &Context<'_>) -> async_graphql::Result<Vec<Destination>> {
-        admin(ctx, self.uuid)?;
+        self.admin(ctx)?;
         Ok(store(ctx)?
             .destinations(self.uuid)
             .await
@@ -522,12 +552,16 @@ impl Mutation {
     ) -> async_graphql::Result<Project> {
         let permissions = access(ctx)?;
         if let Some(creator) = ctx.data_opt::<std::sync::Arc<dyn ProjectCreator>>() {
-            return Ok(Project::from(
+            let mut project = Project::from(
                 creator
                     .create(store(ctx)?, &slug, &name)
                     .await
                     .map_err(error)?,
-            ));
+            );
+            // Scope the trusted capability's role to this returned object only.
+            // Other roots and future requests keep their original Access.
+            project.created_role = Some(creator.created_role());
+            return Ok(project);
         }
         if !permissions.is_root() {
             return Err(denied(

@@ -71,6 +71,11 @@ flattening an event MUST NOT carry more than 128 keys in `properties` and 64 in
 characters are truncated to 1,024. Nesting deeper than 5 levels is kept as JSON
 text at the fifth level.
 
+The string limit also applies to the encoded JSON text of arrays and fifth-level
+objects. It counts Unicode scalar values, not UTF-8 bytes. Truncation can leave a
+partial JSON text value; treat that stored value as an opaque string rather than
+decoding it back into a complete array/object.
+
 Standard context keys, filled by the SDKs:
 
 | Key                                                     | Example                                     |
