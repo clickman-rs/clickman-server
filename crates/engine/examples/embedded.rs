@@ -35,7 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:4131").await?;
+    let bind = std::env::var("CLICKMAN_BIND").unwrap_or_else(|_| "127.0.0.1:4131".into());
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

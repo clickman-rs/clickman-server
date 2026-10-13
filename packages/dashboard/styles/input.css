@@ -1,0 +1,156 @@
+@layer clickman-theme, clickman-utilities;
+@import 'tailwindcss/theme.css' layer(clickman-theme) prefix(cm);
+@import 'tailwindcss/utilities.css' layer(clickman-utilities) prefix(cm) important;
+@source "../src/lib";
+
+@theme {
+  --color-ink: #172324;
+  --color-muted: #667778;
+  --color-line: #dde5e3;
+  --color-canvas: #f5f8f6;
+  --color-brand: #146e59;
+  --color-brand-light: #e6f3ec;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.clickman {
+  --cm-color-ink: var(--clickman-color-ink, #172324);
+  --cm-color-muted: var(--clickman-color-muted, #667778);
+  --cm-color-line: var(--clickman-color-line, #dde5e3);
+  --cm-color-canvas: var(--clickman-color-canvas, #f5f8f6);
+  --cm-color-brand: var(--clickman-color-brand, #146e59);
+  --cm-color-brand-light: var(--clickman-color-brand-light, #e6f3ec);
+  --cm-font-sans: var(
+    --clickman-font-sans,
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif
+  );
+  color: var(--cm-color-ink);
+  font-family: var(--cm-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.clickman :where(*, *::before, *::after) {
+  box-sizing: border-box;
+}
+.clickman :where(h1, h2, h3, p, figure) {
+  margin: 0;
+}
+.clickman :where(button, input, select, textarea) {
+  font: inherit;
+}
+.clickman :where(button, select) {
+  cursor: pointer;
+}
+.clickman :where(button:disabled) {
+  cursor: wait;
+  opacity: 0.5;
+}
+.clickman :where(button) {
+  border: 0 solid;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.clickman :where(input:not([type='checkbox']), textarea, select) {
+  @apply cm:w-full cm:rounded-lg cm:border cm:border-line cm:bg-white cm:px-3 cm:py-2.5 cm:text-sm cm:text-ink;
+  margin: 0;
+}
+.clickman :where(label) {
+  display: grid;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+.clickman :where(fieldset) {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.clickman :where(table) {
+  width: 100%;
+  text-align: left;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+  white-space: normal;
+}
+.clickman :where(th) {
+  border-bottom: 1px solid var(--cm-color-line);
+  padding: 0.75rem 0;
+  font-weight: 500;
+  color: var(--cm-color-muted);
+  white-space: nowrap;
+  background: transparent;
+}
+.clickman :where(td) {
+  border-bottom: 1px solid var(--cm-color-line);
+  padding: 0.875rem 0;
+}
+.clickman :where(tr:last-child td) {
+  border-bottom: 0;
+}
+.clickman :where(h1) {
+  font-size: 1.875rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+.clickman :where(h2) {
+  font-size: 1.125rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  line-height: 1.4;
+}
+.clickman :where(h3) {
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: normal;
+}
+.clickman :where(:focus-visible) {
+  outline: 2px solid var(--cm-color-brand);
+  outline-offset: 2px;
+}
+.clickman .cm-surface {
+  border: 1px solid var(--cm-color-line);
+  border-radius: 0.75rem;
+  background: white;
+}
+.clickman .cm-section-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--cm-color-muted);
+}
+.clickman .cm-error {
+  border: 1px solid #fecaca;
+  border-radius: 0.5rem;
+  background: #fef2f2;
+  color: #991b1b;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+}
+.clickman .cm-empty {
+  padding: 3rem 0;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--cm-color-muted);
+}
+.clickman .cm-tab {
+  border-bottom: 2px solid transparent;
+  padding: 0.75rem 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--cm-color-muted);
+}
+.clickman .cm-tab.active {
+  border-bottom-color: var(--cm-color-brand);
+  color: var(--cm-color-brand);
+}

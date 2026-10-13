@@ -1,0 +1,11 @@
+mutation SaveFunnel($projectId: UUID!, $definition: JSON!) {
+  saveFunnel(projectId: $projectId, definition: $definition) {
+    id
+    key
+    name
+    definition
+  }
+}
+mutation DeleteFunnel($projectId: UUID!, $key: String!) {
+  deleteFunnel(projectId: $projectId, key: $key)
+}

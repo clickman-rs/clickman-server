@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [[ -n "${CLICKMAN_POSTGRES_BIN:-}" ]]; then
+  export PATH="$CLICKMAN_POSTGRES_BIN:$PATH"
+elif [[ ! -x "$(dirname "$(command -v initdb)")/postgres" && -d /Applications/Postgres.app/Contents/Versions/latest/bin ]]; then
+  export PATH="/Applications/Postgres.app/Contents/Versions/latest/bin:$PATH"
+fi
+command -v postgres >/dev/null || { echo 'Set CLICKMAN_POSTGRES_BIN to a PostgreSQL server bin directory' >&2; exit 1; }
+embedded=false
+base=
+if [[ "${1:-}" == --embedded ]]; then
+  embedded=true
+  base=/analytics
+  shift
+fi
+export CLICKMAN_BASE_PATH="$base"
+
+world=$(mktemp -d "${TMPDIR:-/tmp}/clickman-browser.XXXXXX")
+api_pid=
+postgres_started=false
+cleanup() {
+  local status=$?
+  if [[ -n "$api_pid" ]] && kill -0 "$api_pid" 2>/dev/null; then
+    kill "$api_pid"
+    local deadline=$((SECONDS + 10))
+    while kill -0 "$api_pid" 2>/dev/null && (( SECONDS < deadline )); do sleep .1; done
+    if kill -0 "$api_pid" 2>/dev/null; then kill -KILL "$api_pid"; fi
+    # The owned server was explicitly stopped; its signal exit is expected.
+    if wait "$api_pid"; then :; fi
+  fi
+  if [[ "$postgres_started" == true || -f "$world/postgres/postmaster.pid" ]]; then
+    if ! pg_ctl -D "$world/postgres" -m immediate -w stop >"$world/cleanup.log" 2>&1; then
+      cat "$world/cleanup.log" >&2
+      echo "PostgreSQL did not stop; test files retained at $world" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$status" != 0 && -f "$world/api.log" ]]; then tail -n 60 "$world/api.log" >&2; fi
+  rm -rf "$world"
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+read -r database_port api_port < <(python3 - <<'PY'
+import socket
+ports=[]
+sockets=[]
+for _ in range(2):
+    sock=socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    sockets.append(sock)
+    ports.append(str(sock.getsockname()[1]))
+print(' '.join(ports))
+PY
+)
+initdb -D "$world/postgres" -U clickman_test -A trust --no-locale --encoding=UTF8 >/dev/null
+pg_ctl -D "$world/postgres" -l "$world/postgres.log" \
+  -o "-h 127.0.0.1 -p $database_port -k $world" start >/dev/null
+postgres_started=true
+createdb -h 127.0.0.1 -p "$database_port" -U clickman_test clickman_browser
+
+NODE_ENV=production VITE_CLICKMAN_GRAPHQL_ENDPOINT="$base/graphql" pnpm build
+target_directory=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+if [[ "$embedded" == true ]]; then
+  cargo build --locked -p clickman-engine --example embedded
+  api_binary="$target_directory/debug/examples/embedded"
+else
+  cargo build --locked -p clickman-api
+  api_binary="$target_directory/debug/clickman-api"
+fi
+export DATABASE_URL="postgres://clickman_test@127.0.0.1:$database_port/clickman_browser"
+export CLICKMAN_ADMIN_TOKEN=clickman-browser-root-token-32-bytes-long
+export CLICKMAN_BIND="127.0.0.1:$api_port"
+export CLICKMAN_TEST_URL="http://127.0.0.1:$api_port$base/"
+export CLICKMAN_TEST_ADMIN_TOKEN="$CLICKMAN_ADMIN_TOKEN"
+"$api_binary" >"$world/api.log" 2>&1 &
+api_pid=$!
+python3 - "$CLICKMAN_TEST_URL" "$world/api.log" <<'PY'
+import pathlib, sys, time, urllib.request
+deadline=time.monotonic()+30
+while time.monotonic()<deadline:
+    try:
+        with urllib.request.urlopen(sys.argv[1]+'health', timeout=1) as response:
+            if response.status==200:
+                break
+    except (OSError, urllib.error.URLError):
+        time.sleep(.1)
+else:
+    print(pathlib.Path(sys.argv[2]).read_text(), file=sys.stderr)
+    raise SystemExit('Clickman did not become healthy within 30 seconds')
+PY
+pnpm --filter @clickman/web test:e2e --global-timeout=600000 "$@"

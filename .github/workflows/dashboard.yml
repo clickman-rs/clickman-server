@@ -1,0 +1,53 @@
+name: Dashboard
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.1'
+      - uses: Swatinem/rust-cache@v2
+      - name: Install PostgreSQL server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          echo "CLICKMAN_POSTGRES_BIN=$(pg_config --bindir)" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile --prod=false
+      - run: pnpm --filter @clickman/web exec playwright install --with-deps chromium
+      - run: pnpm generate
+      - name: Check generated schema and documents
+        run: git diff --exit-code -- schema/schema.graphql packages/dashboard/src/lib/graphql/generated.ts
+      - run: cargo fmt --all --check
+      - run: pnpm format:check
+      - run: pnpm check
+      - run: pnpm --filter @clickman/dashboard test
+      - run: pnpm --filter @clickman/web test:unit
+      - run: pnpm test:package
+      - run: pnpm test:browser
+      - run: pnpm test:browser --embedded
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dashboard-test-results
+          path: apps/web/test-results/
+          if-no-files-found: ignore

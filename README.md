@@ -5,8 +5,9 @@ events from the Swift, Kotlin, and Rust SDKs, separates data by project, and
 provides a dashboard for activity, retention, funnels, and event breakdowns.
 
 Run the API and background worker as separate processes, or embed the engine
-in an existing Axum application. The dashboard is a static Svelte application;
-Node is needed to build it, rather than to serve production requests.
+in an existing Axum application. The standalone dashboard is a SvelteKit static
+SPA consuming the reusable `@clickman/dashboard` Svelte package. Node is needed
+to build it; the Rust server serves production assets.
 
 ## Run locally
 
@@ -70,40 +71,48 @@ Try the [runnable example](crates/engine/examples/embedded.rs) with the same
 `DATABASE_URL` and `CLICKMAN_ADMIN_TOKEN`:
 
 ```sh
+CLICKMAN_BASE_PATH=/analytics pnpm build
 cargo run --locked -p clickman-engine --example embedded
 ```
 
 The example serves its dashboard at `http://127.0.0.1:4131/analytics/`. Keep the
-trailing slash on both the Axum mount and the dashboard URL so relative assets
-and GraphQL requests resolve correctly.
+trailing slash on the Axum mount and dashboard entry URL. Build-time
+`CLICKMAN_BASE_PATH` sets the asset, routing and default GraphQL prefix. Direct
+links to `/analytics/projects/<id>/retention` work through the static fallback.
+Rebuild without that variable to serve the standalone dashboard at the root.
+
+Svelte hosts can instead import [the dashboard package](packages/dashboard/README.md)
+and supply their own Cachebay client and navigation callback. Ferment uses this
+mode with its existing session-authorized analytics endpoint; its admin shell
+owns authentication and routing.
 
 ## Documentation
 
-| Guide | Use it for |
-| --- | --- |
-| [Wire protocol](docs/PROTOCOL.md) | Event fields, normalization, sanitization, limits, and retries. |
-| [Embedding](docs/EMBEDDING.md) | Host authentication, routing, tracking, scheduling, and transactions. |
-| [Storage and jobs](docs/STORAGE.md) | Project access, compression, reports, retention, erasure, and destination delivery. |
-| [Protocol fixtures](protocol/README.md) | The canonical contract shared by the three SDKs. |
+| Guide                                             | Use it for                                                                          |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [Wire protocol](docs/PROTOCOL.md)                 | Event fields, normalization, sanitization, limits, and retries.                     |
+| [Embedding](docs/EMBEDDING.md)                    | Host authentication, routing, tracking, scheduling, and transactions.               |
+| [Storage and jobs](docs/STORAGE.md)               | Project access, compression, reports, retention, erasure, and destination delivery. |
+| [Protocol fixtures](protocol/README.md)           | The canonical contract shared by the three SDKs.                                    |
+| [Dashboard package](packages/dashboard/README.md) | Public Svelte API, client ownership, styles and release checks.                     |
 
 ## Workspace
 
-| Path | Responsibility |
-| --- | --- |
-| `crates/protocol` | v1 parsing, flattening, limits and sanitization |
-| `crates/analytics` | column codec, activity/retention calculation and funnels |
-| `crates/storage` | SeaORM PostgreSQL access, project management and durable state |
-| `crates/destinations` | delivery interface and Mixpanel adapter |
-| `crates/jobs` | rotation, retention, reports and delivery orchestration |
-| `crates/graphql` | async-graphql schema and project authorization |
-| `crates/engine` | embeddable Axum router, authentication and trusted tracking |
-| `apps/api`, `apps/worker` | deployable Rust binaries |
-| `apps/web` | Svelte dashboard |
-| `packages/ui`, `packages/tailwind-config` | shared components and theme |
-| `packages/graphql-types` | generated schema/operation types and documents |
-| `schema/schema.graphql` | generated backend/frontend contract |
-| `migrations` | versioned SeaORM migration crate and PostgreSQL schema |
-| `deploy` | Docker image and PostgreSQL/API/worker Compose definition |
+| Path                      | Responsibility                                                                           |
+| ------------------------- | ---------------------------------------------------------------------------------------- |
+| `crates/protocol`         | v1 parsing, flattening, limits and sanitization                                          |
+| `crates/analytics`        | column codec, activity/retention calculation and funnels                                 |
+| `crates/storage`          | SeaORM PostgreSQL access, project management and durable state                           |
+| `crates/destinations`     | delivery interface and Mixpanel adapter                                                  |
+| `crates/jobs`             | rotation, retention, reports and delivery orchestration                                  |
+| `crates/graphql`          | async-graphql schema and project authorization                                           |
+| `crates/engine`           | embeddable Axum router, authentication and trusted tracking                              |
+| `apps/api`, `apps/worker` | deployable Rust binaries                                                                 |
+| `apps/web`                | SvelteKit static standalone host: auth, client, layout and routes                        |
+| `packages/dashboard`      | shared Svelte workspace, internal components, operations/types and compiled Tailwind CSS |
+| `schema/schema.graphql`   | generated backend/frontend contract                                                      |
+| `migrations`              | versioned SeaORM migration crate and PostgreSQL schema                                   |
+| `deploy`                  | Docker image and PostgreSQL/API/worker Compose definition                                |
 
 `pnpm generate` re-exports the Rust schema and regenerates TypeScript documents/types. Commit both outputs when the contract changes. This command does not need PostgreSQL. SDK queue fixtures are a separate versioned wire contract in `protocol/`.
 
@@ -119,6 +128,10 @@ cargo fmt --all --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 pnpm check
+pnpm format:check
+pnpm --filter @clickman/dashboard test
+pnpm --filter @clickman/web test:unit
+pnpm test:package
 pnpm build
 createdb clickman_test
 TEST_DATABASE_URL=postgres://localhost/clickman_test scripts/test-postgres
@@ -127,16 +140,23 @@ TEST_DATABASE_URL=postgres://localhost/clickman_test scripts/test-clients
 
 The PostgreSQL suite verifies tenant isolation, key revocation, two-worker rotation, partial-chunk topping, sparse-property chunk splitting, late commits, transaction rollback, erasure, retention, funnel filters, durable delivery retry and router embedding. Those tests are explicitly ignored in the database-free suite and enabled by `test-postgres`. `test-clients` builds the three SDK E2E drivers from sibling repositories (`CLICKMAN_SDK_ROOT` overrides their parent), starts its own API, verifies live/offline/restart histories and checks the resulting reports. Use a disposable database; integration projects remain available there for inspection.
 
-Browser tests exercise project creation, source-key issuance, settings, live ingest/report rendering, funnel configuration, project switching, reader permissions, invalid tokens, sign-out and mobile layout:
+Browser tests exercise project creation, source-key issuance, settings, live
+ingest/reports, funnels, direct links/history, delayed project/session responses,
+reader permissions, invalid tokens, locked mutation drafts and mobile layout.
+The runner owns and removes a disposable PostgreSQL cluster and chooses unused
+API/database ports; it does not read a development database URL:
 
 ```sh
 pnpm --filter @clickman/web exec playwright install chromium
-CLICKMAN_TEST_URL=http://127.0.0.1:4132 \
-CLICKMAN_TEST_ADMIN_TOKEN="$CLICKMAN_ADMIN_TOKEN" \
-pnpm --filter @clickman/web test:e2e
+pnpm test:browser
+pnpm test:browser --embedded
 ```
 
-The same suite works against the embedding example with `CLICKMAN_TEST_URL=http://127.0.0.1:4131/analytics/`. Set `PLAYWRIGHT_CHROME=1` to use an installed Google Chrome instead of downloading Chromium.
+Set `CLICKMAN_POSTGRES_BIN` to a PostgreSQL server bin directory if it is not on
+PATH. Set `PLAYWRIGHT_CHROME=1` to use installed Google Chrome. To target your
+own disposable test server, run `pnpm --filter @clickman/web test:e2e` with
+`CLICKMAN_TEST_URL` (including any prefix/trailing slash) and
+`CLICKMAN_TEST_ADMIN_TOKEN`.
 
 ## Deploy
 

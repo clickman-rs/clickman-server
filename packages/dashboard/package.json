@@ -1,0 +1,64 @@
+{
+  "name": "@clickman/dashboard",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Embeddable Clickman analytics dashboard for Svelte",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lockvoid/clickman-server.git",
+    "directory": "packages/dashboard"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "svelte": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "scripts": {
+    "generate": "graphql-codegen --config codegen.ts",
+    "build": "svelte-package && tailwindcss -i styles/input.css -o dist/styles.css --minify",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "vitest run",
+    "prepack": "pnpm build"
+  },
+  "peerDependencies": {
+    "cachebay": "^0.11.3",
+    "graphql": "^16.11.0",
+    "svelte": "^5.20.0"
+  },
+  "dependencies": {
+    "@graphql-typed-document-node/core": "^3.2.0"
+  },
+  "devDependencies": {
+    "@sveltejs/package": "2.5.8",
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tailwindcss/cli": "4.3.3",
+    "@graphql-codegen/cli": "^7.4.5",
+    "@graphql-codegen/typescript": "^5.0.0",
+    "@graphql-codegen/typescript-operations": "^5.0.0",
+    "@graphql-codegen/typed-document-node": "^6.0.0",
+    "cachebay": "0.11.3",
+    "graphql": "^16.11.0",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5.9.2",
+    "vitest": "3.2.4",
+    "vite": "^6.4.4"
+  }
+}

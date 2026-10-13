@@ -3,12 +3,19 @@
   "private": true,
   "packageManager": "pnpm@10.29.2",
   "scripts": {
-    "dev": "pnpm --filter @clickman/web dev",
-    "build": "pnpm --filter @clickman/web build",
-    "check": "pnpm --filter @clickman/web check",
+    "dev": "pnpm --filter @clickman/dashboard build && pnpm --filter @clickman/web dev",
+    "build": "pnpm --filter @clickman/dashboard build && pnpm --filter @clickman/web build",
+    "check": "pnpm --filter @clickman/dashboard build && pnpm --filter @clickman/dashboard check && pnpm --filter @clickman/web check",
     "schema": "cargo run -q -p clickman-api -- schema > schema/schema.graphql",
-    "generate": "pnpm schema && pnpm --filter @clickman/graphql-types generate",
+    "generate": "pnpm schema && pnpm --filter @clickman/dashboard generate",
     "test": "cargo test --workspace --locked",
-    "lint": "cargo clippy --workspace --all-targets --locked -- -D warnings"
+    "lint": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+    "test:browser": "scripts/test-browser",
+    "format:check": "prettier --check apps/web packages/dashboard scripts/check-dashboard-package.mjs .github/workflows/dashboard.yml package.json .prettierrc.json",
+    "test:package": "node scripts/check-dashboard-package.mjs"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9",
+    "prettier-plugin-svelte": "^4.1.1"
   }
 }

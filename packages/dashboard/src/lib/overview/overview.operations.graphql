@@ -1,0 +1,24 @@
+query Analytics($id: UUID!) {
+  project(id: $id) {
+    id
+    slug
+    name
+    canAdmin
+    settings
+    reports {
+      id
+      key
+      result
+      computedAt
+    }
+    funnels {
+      id
+      key
+      name
+      definition
+    }
+  }
+}
+mutation RefreshAnalytics($projectId: UUID!) {
+  refreshAnalytics(projectId: $projectId)
+}

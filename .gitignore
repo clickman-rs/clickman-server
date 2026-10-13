@@ -15,6 +15,7 @@ tmp/
 **/dist/
 **/test-results/
 **/playwright-report/
+**/.svelte-kit/
 
 # Local credentials, runtime databases, and editor files.
 *.pem

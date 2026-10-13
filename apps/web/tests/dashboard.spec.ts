@@ -1,7 +1,40 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 const root = process.env.CLICKMAN_TEST_ADMIN_TOKEN ?? 'clickman-ui-test-root-token-32-bytes-long';
 
-test('create a project, issue a source key, ingest events and see reports', async ({ page, request }) => {
+async function rootGraphql(request: APIRequestContext, query: string, variables = {}) {
+  const response = await request.post('graphql', {
+    headers: { authorization: `Bearer ${root}` },
+    data: { query, variables },
+  });
+  expect(response.ok()).toBe(true);
+  const result = await response.json();
+  expect(result.errors).toBeUndefined();
+  return result.data;
+}
+
+async function project(request: APIRequestContext, name: string): Promise<string> {
+  const data = await rootGraphql(
+    request,
+    'mutation($slug:String!,$name:String!){createProject(slug:$slug,name:$name){id}}',
+    { slug: `browser-${crypto.randomUUID()}`, name },
+  );
+  return data.createProject.id;
+}
+
+test.beforeEach(async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  (page as typeof page & { runtimeErrors: string[] }).runtimeErrors = errors;
+});
+
+test.afterEach(async ({ page }) => {
+  expect((page as typeof page & { runtimeErrors: string[] }).runtimeErrors).toEqual([]);
+});
+
+test('create a project, issue a source key, ingest events and see reports', async ({
+  page,
+  request,
+}) => {
   const name = `Browser project ${Date.now()}`;
   await page.goto('./');
   await page.getByLabel('Access token').fill(root);
@@ -21,10 +54,30 @@ test('create a project, issue a source key, ingest events and see reports', asyn
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Project settings saved');
   const at = new Date().toISOString();
-  const response = await request.post('v1/batch', { headers: { authorization: `Bearer ${key}` }, data: { sentAt: at, batch: [
-    { type: 'track', messageId: crypto.randomUUID(), timestamp: new Date(Date.now() - 1000).toISOString(), event: 'browser_export_started', externalId: 'browser-user', properties: { format: 'mp4' } },
-    { type: 'track', messageId: crypto.randomUUID(), timestamp: at, event: 'browser_export', externalId: 'browser-user', properties: { format: 'mp4' } },
-  ] } });
+  const response = await request.post('v1/batch', {
+    headers: { authorization: `Bearer ${key}` },
+    data: {
+      sentAt: at,
+      batch: [
+        {
+          type: 'track',
+          messageId: crypto.randomUUID(),
+          timestamp: new Date(Date.now() - 1000).toISOString(),
+          event: 'browser_export_started',
+          externalId: 'browser-user',
+          properties: { format: 'mp4' },
+        },
+        {
+          type: 'track',
+          messageId: crypto.randomUUID(),
+          timestamp: at,
+          event: 'browser_export',
+          externalId: 'browser-user',
+          properties: { format: 'mp4' },
+        },
+      ],
+    },
+  });
   expect(response.status()).toBe(202);
   await page.getByRole('button', { name: 'overview', exact: true }).click();
   await page.getByRole('button', { name: 'Refresh reports', exact: true }).click();
@@ -44,10 +97,16 @@ test('create a project, issue a source key, ingest events and see reports', asyn
   await expect(page.getByRole('cell', { name: 'mp4', exact: true })).toBeVisible();
   await expect(page.getByText('100% of entrants', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'overview', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'overview', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
   await page.screenshot({ path: '../../tmp/dashboard-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
   await page.screenshot({ path: '../../tmp/dashboard-mobile.png', fullPage: true });
   await page.getByRole('button', { name: '+ New project' }).click();
   await page.getByLabel('Project name').fill(`Empty ${name}`);
@@ -59,17 +118,29 @@ test('create a project, issue a source key, ingest events and see reports', asyn
   await expect(page.getByRole('cell', { name: 'browser_export', exact: true })).toBeVisible();
 });
 
-test('reader sees only their project and signing out clears the session', async ({ page, request }) => {
+test('reader sees only their project and signing out clears the session', async ({
+  page,
+  request,
+}) => {
   async function gql(query: string, variables: Record<string, unknown> = {}) {
-    const response = await request.post('graphql', { headers: { authorization: `Bearer ${root}` }, data: { query, variables } });
+    const response = await request.post('graphql', {
+      headers: { authorization: `Bearer ${root}` },
+      data: { query, variables },
+    });
     const result = await response.json();
     expect(result.errors).toBeUndefined();
     return result.data;
   }
   const name = `Reader project ${Date.now()}`;
-  const created = await gql('mutation($slug:String!,$name:String!){createProject(slug:$slug,name:$name){id}}', { slug: `reader-${Date.now()}`, name });
+  const created = await gql(
+    'mutation($slug:String!,$name:String!){createProject(slug:$slug,name:$name){id}}',
+    { slug: `reader-${Date.now()}`, name },
+  );
   const projectId = created.createProject.id;
-  const issued = await gql('mutation($id:UUID!){issueAccessKey(projectId:$id,name:"Browser reader",role:READER){token}}', { id: projectId });
+  const issued = await gql(
+    'mutation($id:UUID!){issueAccessKey(projectId:$id,name:"Browser reader",role:READER){token}}',
+    { id: projectId },
+  );
   await page.goto('./');
   await page.getByLabel('Access token').fill(issued.issueAccessKey.token);
   await page.getByRole('button', { name: 'Open dashboard' }).click();
@@ -89,4 +160,299 @@ test('an invalid access token shows an authentication error', async ({ page }) =
   await expect(page.getByRole('alert')).toContainText('This access token was rejected');
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByLabel('Access token')).toBeVisible();
+});
+
+test('protected project deep links survive login, reload and browser history', async ({
+  page,
+  request,
+}) => {
+  const response = await request.post('graphql', {
+    headers: { authorization: `Bearer ${root}` },
+    data: {
+      query: 'mutation($slug:String!,$name:String!){createProject(slug:$slug,name:$name){id}}',
+      variables: { slug: `deep-${Date.now()}`, name: 'Deep-linked project' },
+    },
+  });
+  const result = await response.json();
+  expect(result.errors).toBeUndefined();
+  const id = result.data.createProject.id;
+  await page.goto(`projects/${id}/retention`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Deep-linked project', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cohort retention', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/projects/${id}/retention$`));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Cohort retention', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'overview', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/projects/${id}/overview$`));
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Cohort retention', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: /clickman$/ }).click();
+  await expect(page).toHaveURL(/\/projects\/[0-9a-f-]+\/overview$/);
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Cohort retention', exact: true })).toBeVisible();
+});
+
+test('key issuance locks its draft until the updated key list is loaded', async ({
+  page,
+  request,
+}) => {
+  const response = await request.post('graphql', {
+    headers: { authorization: `Bearer ${root}` },
+    data: {
+      query: 'mutation($slug:String!,$name:String!){createProject(slug:$slug,name:$name){id}}',
+      variables: { slug: `keys-${Date.now()}`, name: 'Key draft project' },
+    },
+  });
+  const result = await response.json();
+  expect(result.errors).toBeUndefined();
+  const id = result.data.createProject.id;
+  await page.goto(`projects/${id}/settings`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page.getByLabel('Source name').fill('frozen-source');
+  let releaseMutation!: () => void;
+  let capturedMutation!: () => void;
+  let releaseRefresh!: () => void;
+  let capturedRefresh!: () => void;
+  const mutationHeld = new Promise<void>((resolve) => {
+    releaseMutation = resolve;
+  });
+  const mutationReady = new Promise<void>((resolve) => {
+    capturedMutation = resolve;
+  });
+  const refreshHeld = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  const refreshReady = new Promise<void>((resolve) => {
+    capturedRefresh = resolve;
+  });
+  let refreshArmed = false;
+  let refreshCaptured = false;
+  await page.route('**/graphql', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.operationName === 'IssueWriteKey') {
+      const response = await route.fetch();
+      capturedMutation();
+      await mutationHeld;
+      await route.fulfill({ response });
+    } else if (body.operationName === 'ProjectAdmin' && refreshArmed && !refreshCaptured) {
+      refreshCaptured = true;
+      const response = await route.fetch();
+      capturedRefresh();
+      await refreshHeld;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  try {
+    await page.getByRole('button', { name: 'Create write key', exact: true }).click();
+    await mutationReady;
+    await expect(page.getByLabel('Source name')).toBeDisabled();
+    refreshArmed = true;
+    releaseMutation();
+    await refreshReady;
+    await expect(page.getByLabel('New key')).toHaveValue(/^cmw_/);
+    await expect(page.getByLabel('Source name')).toBeDisabled();
+    await expect(
+      page.getByRole('button', { name: 'Create write key', exact: true }),
+    ).toBeDisabled();
+    releaseRefresh();
+    await expect(page.getByLabel('Source name')).toBeEnabled();
+  } finally {
+    releaseMutation();
+    releaseRefresh();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
+test('a project UUID in uppercase opens the same analytics report', async ({ page, request }) => {
+  const id = await project(request, 'Uppercase project link');
+  await page.goto(`projects/${id.toUpperCase()}/retention`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Uppercase project link', exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Cohort retention', exact: true })).toBeVisible();
+});
+
+test('funnel drafts stay locked and follow-up refresh failures are visible', async ({
+  page,
+  request,
+}) => {
+  const id = await project(request, 'Funnel draft project');
+  await page.goto(`projects/${id}/funnels`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await page.getByRole('button', { name: '+ New funnel' }).click();
+  await page.getByLabel('Name', { exact: true }).fill('Locked funnel');
+  await page.getByLabel('Key', { exact: true }).fill('locked_funnel');
+  await page.getByLabel('Event name').nth(0).fill('started');
+  await page.getByLabel('Event name').nth(1).fill('finished');
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  let refreshArmed = false;
+  await page.route('**/graphql', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.operationName === 'SaveFunnel') {
+      const response = await route.fetch();
+      refreshArmed = true;
+      captured();
+      await held;
+      await route.fulfill({ response });
+    } else if (body.operationName === 'Analytics' && refreshArmed) {
+      await route.fulfill({ json: { errors: [{ message: 'Test report refresh unavailable' }] } });
+    } else await route.continue();
+  });
+  try {
+    await page.getByRole('button', { name: 'Save funnel', exact: true }).click();
+    await ready;
+    await expect(page.getByLabel('Name', { exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '+ New funnel' })).toBeDisabled();
+    release();
+    await expect(page.getByRole('alert').first()).toContainText('Test report refresh unavailable');
+    await expect(page.getByRole('button', { name: '+ New funnel' })).toBeEnabled();
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
+test('switching projects hides cached data and ignores a late previous-project response', async ({
+  page,
+  request,
+}) => {
+  const oldId = await project(request, 'Previous project');
+  const newId = await project(request, 'Current empty project');
+  await rootGraphql(
+    request,
+    'mutation($id:UUID!,$definition:JSON!){saveFunnel(projectId:$id,definition:$definition){id}}',
+    {
+      id: oldId,
+      definition: {
+        key: 'old',
+        name: 'Previous project funnel',
+        window: '7d',
+        range: '90d',
+        steps: [{ event: 'first' }, { event: 'last' }],
+      },
+    },
+  );
+  await page.goto(`projects/${oldId}/funnels`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Previous project funnel', exact: true }),
+  ).toBeVisible();
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  let capturedOnce = false;
+  await page.route('**/graphql', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.operationName === 'Analytics' && body.variables.id === oldId && !capturedOnce) {
+      capturedOnce = true;
+      const response = await route.fetch();
+      captured();
+      await held;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  try {
+    await page.getByRole('button', { name: 'Refresh reports', exact: true }).click();
+    await ready;
+    await page.getByLabel('Project', { exact: true }).selectOption(newId);
+    await expect(
+      page.getByRole('heading', { name: 'Current empty project', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('No funnels yet.', { exact: false })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Previous project funnel', exact: true }),
+    ).toHaveCount(0);
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(page.getByLabel('Project', { exact: true })).toHaveValue(newId);
+    await expect(
+      page.getByRole('heading', { name: 'Previous project funnel', exact: true }),
+    ).toHaveCount(0);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
+});
+
+test('a late administrator response cannot enter a new reader session', async ({
+  page,
+  request,
+}) => {
+  const oldId = await project(request, 'Old session project');
+  const readerId = await project(request, 'New reader session project');
+  const data = await rootGraphql(
+    request,
+    'mutation($id:UUID!){issueAccessKey(projectId:$id,name:"Session reader",role:READER){token}}',
+    { id: readerId },
+  );
+  await page.goto(`projects/${oldId}/overview`);
+  await page.getByLabel('Access token').fill(root);
+  await page.getByRole('button', { name: 'Open dashboard' }).click();
+  await expect(
+    page.getByRole('heading', { name: 'Old session project', exact: true }),
+  ).toBeVisible();
+  let release!: () => void;
+  let captured!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const ready = new Promise<void>((resolve) => {
+    captured = resolve;
+  });
+  let capturedOnce = false;
+  await page.route('**/graphql', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.operationName === 'Analytics' && body.variables.id === oldId && !capturedOnce) {
+      capturedOnce = true;
+      const response = await route.fetch();
+      captured();
+      await held;
+      await route.fulfill({ response });
+    } else await route.continue();
+  });
+  try {
+    await page.getByRole('button', { name: 'Refresh reports', exact: true }).click();
+    await ready;
+    await page.getByRole('button', { name: 'Sign out' }).click();
+    await page.getByLabel('Access token').fill(data.issueAccessKey.token);
+    await page.getByRole('button', { name: 'Open dashboard' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'New reader session project', exact: true }),
+    ).toBeVisible();
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(page.getByLabel('Project', { exact: true }).locator('option')).toHaveCount(1);
+    await expect(
+      page.getByRole('heading', { name: 'Old session project', exact: true }),
+    ).toHaveCount(0);
+    await page.goto(`projects/${readerId}/settings`);
+    await expect(
+      page.getByRole('heading', { name: 'Project administrator access required.', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel('Source name')).toHaveCount(0);
+  } finally {
+    release();
+    await page.unrouteAll({ behavior: 'wait' });
+  }
 });

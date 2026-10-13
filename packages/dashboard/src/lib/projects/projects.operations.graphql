@@ -1,0 +1,32 @@
+query DashboardAccess {
+  viewer {
+    canCreateProjects
+  }
+}
+query Projects {
+  projects @connection(mode: "page") {
+    edges {
+      cursor
+      node {
+        id
+        slug
+        name
+        canAdmin
+      }
+    }
+    pageInfo {
+      startCursor
+      endCursor
+      hasPreviousPage
+      hasNextPage
+    }
+  }
+}
+mutation CreateProject($slug: String!, $name: String!) {
+  createProject(slug: $slug, name: $name) {
+    id
+    slug
+    name
+    canAdmin
+  }
+}
