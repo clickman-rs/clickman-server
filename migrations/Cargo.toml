@@ -1,0 +1,11 @@
+[package]
+name = "clickman-migrations"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sea-orm-migration.workspace = true
+
+[lints]
+workspace = true

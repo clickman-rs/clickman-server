@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Drive all three standalone SDKs through a real Rust API and PostgreSQL."""
+import json
+import os
+from pathlib import Path
+import selectors
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
+import uuid
+
+root = Path(__file__).resolve().parents[1]
+sdk_root = Path(os.environ.get("CLICKMAN_SDK_ROOT", root.parent))
+database = os.environ.get("TEST_DATABASE_URL")
+if not database:
+    raise SystemExit("Set TEST_DATABASE_URL to a disposable PostgreSQL database")
+
+def run(args, cwd):
+    subprocess.run(args, cwd=cwd, check=True)
+
+run(["cargo", "build", "--locked", "-p", "clickman-api"], root)
+run(["cargo", "build", "--locked", "-p", "clickman-e2e-worker"], sdk_root / "clickman-rust")
+run(["swift", "build", "--product", "ClickManE2EWorker"], sdk_root / "clickman-swift")
+run(["./gradlew", "--console=plain", ":e2e-worker:installDist"], sdk_root / "clickman-kotlin")
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+endpoint = f"http://127.0.0.1:{port}"
+admin_token = "test_" + uuid.uuid4().hex + uuid.uuid4().hex
+env = dict(os.environ, DATABASE_URL=database, CLICKMAN_ADMIN_TOKEN=admin_token, CLICKMAN_BIND=f"127.0.0.1:{port}")
+
+def request(path, body, token=admin_token):
+    payload = json.dumps(body).encode()
+    req = urllib.request.Request(endpoint + path, payload, {"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as response:
+        return json.load(response)
+
+def gql(query, variables=None):
+    result = request("/graphql", {"query": query, "variables": variables or {}})
+    if result.get("errors"):
+        raise AssertionError(result["errors"])
+    return result["data"]
+
+class Client:
+    def __init__(self, binary, key, store, url=endpoint):
+        self.log = tempfile.TemporaryFile(mode="w+")
+        self.process = subprocess.Popen([str(binary), url, key, str(store)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True)
+        assert self.answer()["ready"]
+    def answer(self):
+        with selectors.DefaultSelector() as selector:
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            if not selector.select(timeout=30):
+                raise AssertionError("SDK did not answer within 30 seconds")
+        line = self.process.stdout.readline()
+        if not line:
+            self.log.seek(0)
+            raise AssertionError("SDK exited: " + self.log.read())
+        return json.loads(line)
+    def call(self, command, **args):
+        self.process.stdin.write(json.dumps(dict(command=command, **args)) + "\n")
+        self.process.stdin.flush()
+        answer = self.answer()
+        assert answer.get("ok"), answer
+        return answer
+    def stop(self):
+        self.process.stdin.close()
+        assert self.process.wait(timeout=30) == 0
+        self.log.close()
+    def kill(self):
+        self.process.kill()
+        self.process.wait(timeout=10)
+        self.log.close()
+
+with tempfile.TemporaryDirectory(prefix="clickman-clients-") as scratch:
+    server_log = open(Path(scratch) / "server.log", "w+")
+    server = subprocess.Popen([str(root / "target/debug/clickman-api")], cwd=root, env=env, stdout=server_log, stderr=subprocess.STDOUT)
+    clients = []
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with urllib.request.urlopen(endpoint + "/health", timeout=1) as response:
+                    assert response.status == 200
+                break
+            except Exception:
+                if server.poll() is not None or time.monotonic() > deadline:
+                    server_log.seek(0)
+                    raise AssertionError("API startup failed: " + server_log.read())
+                time.sleep(.1)
+        project = gql("mutation($slug:String!){createProject(slug:$slug,name:\"SDK E2E\"){id}}", {"slug": "sdk-e2e-" + uuid.uuid4().hex})["createProject"]["id"]
+        gql("mutation($id:UUID!){updateSettings(projectId:$id,settings:{rotation_lag_seconds:0}){id}}", {"id": project})
+        binaries = {
+            "rust": sdk_root / "clickman-rust/target/debug/clickman-e2e-worker",
+            "swift": sdk_root / "clickman-swift/.build/debug/ClickManE2EWorker",
+            "kotlin": sdk_root / "clickman-kotlin/e2e-worker/build/install/e2e-worker/bin/e2e-worker",
+        }
+        for language, binary in binaries.items():
+            key = gql("mutation($id:UUID!,$source:String!){issueWriteKey(projectId:$id,source:$source){token}}", {"id": project, "source": language})["issueWriteKey"]["token"]
+            client = Client(binary, key, Path(scratch) / f"{language}.sqlite")
+            clients.append(client)
+            client.call("identify", externalId="sdk-" + language)
+            client.call("traits", traits={"plan": "pro"})
+            client.call("track", event="export_completed", properties={"format": "mp4", "contact": {"email": "a@b.co"}})
+            assert client.call("flush")["pending"] == 0
+            client.stop(); clients.remove(client)
+            # Offline history must survive an abrupt process death and reopening.
+            with socket.socket() as offline_socket:
+                offline_socket.bind(("127.0.0.1", 0))
+                offline_endpoint = f"http://127.0.0.1:{offline_socket.getsockname()[1]}"
+                store = Path(scratch) / f"{language}-offline.sqlite"
+                offline = Client(binary, key, store, offline_endpoint); clients.append(offline)
+                for index in range(3): offline.call("track", event="offline_edit", properties={"index": index})
+                assert offline.call("flush")["pending"] == 5
+                offline.kill(); clients.remove(offline)
+            online = Client(binary, key, store); clients.append(online)
+            assert online.call("flush")["pending"] == 0
+            online.stop(); clients.remove(online)
+            print(f"{language}: live delivery, traits, offline persistence and restart passed")
+        gql("mutation($id:UUID!){refreshAnalytics(projectId:$id)}", {"id": project})
+        reports = gql("query($id:UUID!){project(id:$id){reports{key result}}}", {"id": project})["project"]["reports"]
+        totals = {e["event"]: e for r in reports if r["key"] == "events" for e in r["result"]["events"]}
+        assert totals["export_completed"]["events"] == 3 and totals["export_completed"]["actors"] == 3, totals
+        assert totals["offline_edit"]["events"] == 9, totals
+        print("All three SDKs reached the Rust analytics reports; no Rails process was used.")
+    finally:
+        for client in clients:
+            if client.process.poll() is None: client.kill()
+        server.terminate()
+        try: server.wait(timeout=10)
+        except subprocess.TimeoutExpired: server.kill(); server.wait()
+        server_log.close()

@@ -1,0 +1,174 @@
+type AccessKey {
+	id: ID!
+	name: String!
+	role: ProjectRole!
+	revokedAt: DateTime
+}
+
+"""
+Implement the DateTime<Utc> scalar
+
+The input/output is a string in RFC3339 format.
+"""
+scalar DateTime
+
+type Destination {
+	id: ID!
+	name: String!
+	kind: String!
+	config: JSON!
+}
+
+type Funnel {
+	id: ID!
+	key: String!
+	name: String!
+	definition: JSON!
+}
+
+type IssuedKey {
+	id: ID!
+	token: String!
+}
+
+"""
+A scalar that can represent any JSON value.
+"""
+scalar JSON
+
+type Mutation {
+	createProject(slug: String!, name: String!): Project!
+	updateSettings(projectId: UUID!, settings: JSON!): Project!
+	issueWriteKey(projectId: UUID!, source: String!): IssuedKey!
+	revokeWriteKey(projectId: UUID!, id: UUID!): Boolean!
+	issueAccessKey(projectId: UUID!, name: String!, role: ProjectRole!): IssuedKey!
+	revokeAccessKey(projectId: UUID!, id: UUID!): Boolean!
+	saveFunnel(projectId: UUID!, definition: JSON!): Funnel!
+	deleteFunnel(projectId: UUID!, key: String!): Boolean!
+	eraseActor(projectId: UUID!, externalId: String!): Boolean!
+	refreshAnalytics(projectId: UUID!): Boolean!
+	saveMixpanelDestination(projectId: UUID!, name: String!, config: JSON!): Destination!
+	deleteDestination(projectId: UUID!, id: UUID!): Boolean!
+}
+
+"""
+Information about pagination in a connection
+"""
+type PageInfo {
+	"""
+	When paginating backwards, are there more items?
+	"""
+	hasPreviousPage: Boolean!
+	"""
+	When paginating forwards, are there more items?
+	"""
+	hasNextPage: Boolean!
+	"""
+	When paginating backwards, the cursor to continue.
+	"""
+	startCursor: String
+	"""
+	When paginating forwards, the cursor to continue.
+	"""
+	endCursor: String
+}
+
+type Project {
+	id: ID!
+	slug: String!
+	name: String!
+	settings: JSON!
+	createdAt: DateTime!
+	canAdmin: Boolean!
+	reports: [Report!]!
+	funnels: [Funnel!]!
+	writeKeys: [WriteKey!]!
+	accessKeys: [AccessKey!]!
+	destinations: [Destination!]!
+}
+
+type ProjectConnection {
+	"""
+	Information to aid in pagination.
+	"""
+	pageInfo: PageInfo!
+	"""
+	A list of edges.
+	"""
+	edges: [ProjectEdge!]!
+	"""
+	A list of nodes.
+	"""
+	nodes: [Project!]!
+}
+
+"""
+An edge in a connection.
+"""
+type ProjectEdge {
+	"""
+	The item at the end of the edge
+	"""
+	node: Project!
+	"""
+	A cursor for use in pagination
+	"""
+	cursor: String!
+}
+
+enum ProjectRole {
+	READER
+	ADMIN
+}
+
+type Query {
+	viewer: Viewer!
+	projects: ProjectConnection!
+	project(id: UUID!): Project!
+}
+
+type Report {
+	id: ID!
+	key: String!
+	result: JSON!
+	computedAt: DateTime!
+}
+
+"""
+A UUID is a unique 128-bit number, stored as 16 octets. UUIDs are parsed as
+Strings within GraphQL. UUIDs are used to assign unique identifiers to
+entities without requiring a central allocating authority.
+
+# References
+
+* [Wikipedia: Universally Unique Identifier](http://en.wikipedia.org/wiki/Universally_unique_identifier)
+* [RFC4122: A Universally Unique Identifier (UUID) URN Namespace](http://tools.ietf.org/html/rfc4122)
+"""
+scalar UUID
+
+type Viewer {
+	canCreateProjects: Boolean!
+}
+
+type WriteKey {
+	id: ID!
+	source: String!
+	revokedAt: DateTime
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Provides a scalar specification URL for specifying the behavior of custom scalar types.
+"""
+directive @specifiedBy(url: String!) on SCALAR
+schema {
+	query: Query
+	mutation: Mutation
+}

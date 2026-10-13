@@ -1,0 +1,37 @@
+[package]
+name = "clickman-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clickman-protocol.workspace = true
+clickman-storage.workspace = true
+clickman-jobs.workspace = true
+clickman-graphql.workspace = true
+async-graphql.workspace = true
+clickman-destinations.workspace = true
+axum.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+flate2.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+time.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+sea-orm.workspace = true
+tower.workspace = true
+clickman-analytics.workspace = true
+reqwest.workspace = true
+http-body-util = "0.1"

@@ -1,0 +1,14 @@
+{
+  "name": "clickman-server",
+  "private": true,
+  "packageManager": "pnpm@10.29.2",
+  "scripts": {
+    "dev": "pnpm --filter @clickman/web dev",
+    "build": "pnpm --filter @clickman/web build",
+    "check": "pnpm --filter @clickman/web check",
+    "schema": "cargo run -q -p clickman-api -- schema > schema/schema.graphql",
+    "generate": "pnpm schema && pnpm --filter @clickman/graphql-types generate",
+    "test": "cargo test --workspace --locked",
+    "lint": "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  }
+}

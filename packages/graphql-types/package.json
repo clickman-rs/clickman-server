@@ -1,0 +1,22 @@
+{
+  "name": "@clickman/graphql-types",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "graphql-codegen --config codegen.ts"
+  },
+  "dependencies": {
+    "@graphql-typed-document-node/core": "^3.2.0"
+  },
+  "devDependencies": {
+    "@graphql-codegen/cli": "^7.4.5",
+    "@graphql-codegen/typescript": "^5.0.0",
+    "@graphql-codegen/typescript-operations": "^5.0.0",
+    "@graphql-codegen/typed-document-node": "^6.0.0",
+    "graphql": "^16.11.0"
+  }
+}

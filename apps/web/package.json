@@ -1,0 +1,29 @@
+{
+  "name": "@clickman/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@clickman/ui": "workspace:*",
+    "@clickman/tailwind-config": "workspace:*",
+    "@clickman/graphql-types": "workspace:*",
+    "cachebay": "0.11.1",
+    "graphql": "^16.11.0"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@playwright/test": "^1.55.0",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.4"
+  }
+}

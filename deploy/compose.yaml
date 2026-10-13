@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:18-bookworm
+    environment:
+      POSTGRES_USER: clickman
+      POSTGRES_DB: clickman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - clickman-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clickman -d clickman"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    image: clickman-server:local
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL using postgres as the host}
+      CLICKMAN_ADMIN_TOKEN: ${CLICKMAN_ADMIN_TOKEN:?Set CLICKMAN_ADMIN_TOKEN}
+      RUST_LOG: clickman=info,tower_http=info
+    ports:
+      - "127.0.0.1:4132:4132"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+  worker:
+    image: clickman-server:local
+    command: ["clickman-worker"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      RUST_LOG: clickman=info,apalis=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  clickman-data:

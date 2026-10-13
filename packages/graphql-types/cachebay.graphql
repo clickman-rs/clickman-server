@@ -1,0 +1,2 @@
+# Cachebay strips this client directive before sending operations to the server.
+directive @connection(mode: String, filters: [String!], key: String) on FIELD
